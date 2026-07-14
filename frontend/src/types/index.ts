@@ -129,10 +129,17 @@ export interface RegisterRequest {
 
 export interface AffiliateInvitee {
   user_id: number
+  inviter_id: number
   email: string
   username: string
+  level: number
   created_at?: string
   total_rebate: number
+  total_recharged: number
+  last_recharged_amount: number
+  last_recharged_at?: string | null
+  total_consumed: number
+  last_used_at?: string | null
 }
 
 export interface UserAffiliateDetail {
@@ -148,8 +155,69 @@ export interface UserAffiliateDetail {
   invitees: AffiliateInvitee[]
 }
 
+export interface AffiliateInviteeRechargeRecord {
+  code: string
+  value: number
+  type: string
+  used_at: string
+}
+
+export interface AffiliateInviteeDailyUsage {
+  date: string
+  requests: number
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  actual_cost: number
+}
+
+export interface AffiliateInviteeDetail {
+  user_id: number
+  email: string
+  username: string
+  total_recharged: number
+  total_consumed: number
+  recharge_records: AffiliateInviteeRechargeRecord[]
+  daily_usage: AffiliateInviteeDailyUsage[]
+}
+
 export interface AffiliateTransferResponse {
   transferred_quota: number
+  balance: number
+}
+
+export interface TokenLeaderboardEntry {
+  rank: number
+  anonymous_id: string
+  total_tokens: number
+  reward_points: number
+  is_current_user: boolean
+}
+
+export interface TokenPointWallet {
+  points: number
+  exchange_rate_points: number
+  exchange_rate_quota: number
+  exchangeable_quota: number
+  exchangeable_points: number
+}
+
+export interface TokenLeaderboardData {
+  date: string
+  timezone: string
+  settled: boolean
+  settled_at?: string
+  next_settlement_at: string
+  entries: TokenLeaderboardEntry[]
+  current_user?: TokenLeaderboardEntry
+  wallet: TokenPointWallet
+  reward_rules: number[]
+}
+
+export interface TokenPointExchangeResult {
+  spent_points: number
+  quota: number
+  points: number
   balance: number
 }
 
@@ -240,6 +308,7 @@ export interface PublicSettings {
   available_channels_enabled: boolean
   service_quota_enabled: boolean
   affiliate_enabled: boolean
+  token_leaderboard_enabled?: boolean
   allow_user_view_error_requests?: boolean
 }
 

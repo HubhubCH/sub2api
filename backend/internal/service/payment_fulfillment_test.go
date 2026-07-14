@@ -144,6 +144,10 @@ func (r *paymentFulfillmentAffiliateRepoStub) GetAffiliateUserOverview(context.C
 	panic("unexpected GetAffiliateUserOverview call")
 }
 
+func (r *paymentFulfillmentAffiliateRepoStub) GetInviteeDetail(context.Context, int64, int64, int) (*AffiliateInviteeDetail, error) {
+	panic("unexpected GetInviteeDetail call")
+}
+
 type paymentFulfillmentSettingRepoStub struct {
 	values map[string]string
 }

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"time"
 
@@ -230,6 +231,30 @@ func (h *UserHandler) TransferAffiliateQuota(c *gin.Context) {
 		"transferred_quota": transferred,
 		"balance":           balance,
 	})
+}
+
+// GetAffiliateInviteeDetail returns recharge and daily usage detail for an invited descendant.
+// GET /api/v1/user/aff/invitees/:user_id/detail?days=30
+func (h *UserHandler) GetAffiliateInviteeDetail(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+
+	inviteeID, err := strconv.ParseInt(c.Param("user_id"), 10, 64)
+	if err != nil || inviteeID <= 0 {
+		response.BadRequest(c, "Invalid user_id")
+		return
+	}
+	days, _ := strconv.Atoi(c.DefaultQuery("days", "30"))
+
+	detail, err := h.affiliateService.GetInviteeDetail(c.Request.Context(), subject.UserID, inviteeID, days)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, detail)
 }
 
 type StartIdentityBindingRequest struct {

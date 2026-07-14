@@ -1,7 +1,21 @@
-<template>
+﻿<template>
   <AppLayout>
-    <div class="custom-page-layout">
-      <div class="card flex-1 min-h-0 overflow-hidden">
+    <div
+      class="mx-auto w-full"
+      :class="isFeaturedEmbedPage ? 'custom-page-wide' : 'max-w-[1440px]'"
+    >
+      <div
+        class="custom-page-layout"
+        :class="{
+          'custom-page-layout-featured': isFeaturedEmbedPage,
+          'custom-page-layout-recharge': isRechargeEmbedPage,
+          'custom-page-layout-downloads': isDownloadEmbedPage,
+        }"
+      >
+      <div
+        class="card flex-1 min-h-0 overflow-hidden"
+        :class="{ 'custom-page-card-featured': isFeaturedEmbedPage }"
+      >
         <div v-if="loading" class="flex h-full items-center justify-center py-12">
           <div
             class="h-8 w-8 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"
@@ -94,7 +108,16 @@
         </div>
 
         <!-- Iframe embed mode -->
-        <div v-else class="custom-embed-shell">
+        <div
+          v-else
+          class="custom-embed-shell"
+          :class="{
+            'custom-embed-shell-featured': isFeaturedEmbedPage,
+            'custom-embed-shell-recharge': isRechargeEmbedPage,
+            'custom-embed-shell-downloads': isDownloadEmbedPage,
+            'custom-embed-shell-cropped': shouldCropEmbeddedHeader,
+          }"
+        >
           <a
             :href="embeddedUrl"
             target="_blank"
@@ -109,7 +132,13 @@
             class="custom-embed-frame"
             allowfullscreen
           ></iframe>
+          <div
+            v-if="isRechargeEmbedPage"
+            class="custom-embed-footer-mask"
+            aria-hidden="true"
+          ></div>
         </div>
+      </div>
       </div>
     </div>
   </AppLayout>
@@ -173,6 +202,22 @@ const markdownSlug = computed(() => {
 
 const isMarkdownMode = computed(() => !!markdownSlug.value)
 
+const pageTitle = computed(() => {
+  if (menuItem.value?.label) return menuItem.value.label
+  return '自定义页面'
+})
+
+const normalizedPageTitle = computed(() => pageTitle.value.trim().toLowerCase())
+const isRechargeEmbedPage = computed(() => {
+  const label = normalizedPageTitle.value
+  return label.includes('充值中心') || label.includes('充值') || label.includes('payment') || label.includes('recharge')
+})
+const isDownloadEmbedPage = computed(() => {
+  const label = normalizedPageTitle.value
+  return label.includes('软件下载') || label.includes('下载') || label.includes('download')
+})
+const isFeaturedEmbedPage = computed(() => isRechargeEmbedPage.value || isDownloadEmbedPage.value)
+
 const embeddedUrl = computed(() => {
   if (!menuItem.value || isMarkdownMode.value) return ''
   return buildEmbeddedUrl(
@@ -190,10 +235,14 @@ const isValidUrl = computed(() => {
   return url.startsWith('http://') || url.startsWith('https://')
 })
 
+const shouldCropEmbeddedHeader = computed(() => {
+  return isRechargeEmbedPage.value
+})
+
 function generateHeadingId(text: string, index: number): string {
   const base = text
     .toLowerCase()
-    .replace(/[^\w一-鿿]+/g, '-')
+    .replace(/[^\w\u4e00-\u9fa5]+/g, '-')
     .replace(/^-+|-+$/g, '')
   return base ? `${base}-${index}` : `heading-${index}`
 }
@@ -230,7 +279,7 @@ async function fetchAndRenderMarkdown(slug: string) {
       headers: authStore.token ? { Authorization: `Bearer ${authStore.token}` } : {},
     })
     if (!resp.ok) {
-      renderedHtml.value = '<p class="text-red-500">Page not found</p>'
+      renderedHtml.value = '<p class="text-red-500">椤甸潰鏈壘鍒?/p>'
       return
     }
     let raw = await resp.text()
@@ -263,7 +312,7 @@ async function fetchAndRenderMarkdown(slug: string) {
     renderedHtml.value = withIds
     tocItems.value = toc
   } catch {
-    renderedHtml.value = '<p class="text-red-500">Failed to load page</p>'
+    renderedHtml.value = '<p class="text-red-500">椤甸潰鍔犺浇澶辫触</p>'
   } finally {
     loading.value = false
     await nextTick()
@@ -376,7 +425,37 @@ onUnmounted(() => {
 <style scoped>
 .custom-page-layout {
   @apply flex flex-col;
-  height: calc(100vh - 64px - 4rem);
+  height: clamp(600px, calc(100vh - 8rem), 1040px);
+}
+
+.custom-page-wide {
+  max-width: min(1680px, calc(100vw - 2rem));
+}
+
+.custom-page-layout-featured {
+  height: clamp(620px, calc(100vh - 7.5rem), 1080px);
+}
+
+.custom-page-card-featured {
+  border: 0;
+  border-radius: 30px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(245, 249, 255, 0.9)),
+    radial-gradient(circle at 14% 0%, rgba(59, 130, 246, 0.12), transparent 32%),
+    radial-gradient(circle at 86% 8%, rgba(20, 184, 166, 0.1), transparent 28%);
+  box-shadow:
+    0 24px 70px rgba(40, 63, 118, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.dark .custom-page-card-featured {
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(2, 8, 23, 0.94)),
+    radial-gradient(circle at 14% 0%, rgba(59, 130, 246, 0.18), transparent 32%),
+    radial-gradient(circle at 86% 8%, rgba(20, 184, 166, 0.12), transparent 28%);
+  box-shadow:
+    0 24px 70px rgba(2, 8, 23, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .toc-sidebar {
@@ -444,9 +523,53 @@ onUnmounted(() => {
   @apply p-0;
 }
 
+.custom-embed-shell-featured {
+  border-radius: 30px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(248, 252, 255, 0.9)),
+    radial-gradient(circle at 14% 0%, rgba(20, 184, 166, 0.13), transparent 32%),
+    radial-gradient(circle at 86% 8%, rgba(59, 130, 246, 0.11), transparent 30%),
+    radial-gradient(circle at 72% 96%, rgba(251, 146, 60, 0.08), transparent 34%);
+}
+
+.custom-embed-shell-featured::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  border-radius: inherit;
+  box-shadow:
+    inset 0 0 0 1px rgba(226, 232, 240, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.75);
+}
+
+.dark .custom-embed-shell-featured {
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.82), rgba(2, 8, 23, 0.9)),
+    radial-gradient(circle at 16% 0%, rgba(96, 165, 250, 0.18), transparent 34%);
+}
+
+.dark .custom-embed-shell-featured::before {
+  box-shadow:
+    inset 0 0 0 1px rgba(51, 65, 85, 0.72),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
 .custom-open-fab {
-  @apply absolute right-3 top-3 z-10;
-  @apply shadow-sm backdrop-blur supports-[backdrop-filter]:bg-white/80 dark:supports-[backdrop-filter]:bg-dark-800/80;
+  @apply absolute right-4 top-4 z-20;
+  border-radius: 999px;
+  border: 1px solid rgba(226, 232, 240, 0.86);
+  background: rgba(255, 255, 255, 0.9);
+  color: rgb(51 65 85);
+  box-shadow: 0 12px 28px rgba(51, 65, 85, 0.12);
+  backdrop-filter: blur(16px);
+}
+
+.dark .custom-open-fab {
+  border-color: rgba(71, 85, 105, 0.72);
+  background: rgba(15, 23, 42, 0.86);
+  color: rgb(226 232 240);
 }
 
 .custom-embed-frame {
@@ -458,6 +581,110 @@ onUnmounted(() => {
   border-radius: 0;
   box-shadow: none;
   background: transparent;
+}
+
+.custom-embed-shell-recharge .custom-embed-frame {
+  width: calc(100% + 18px);
+}
+
+.custom-embed-shell-cropped {
+  border-radius: 30px;
+  box-shadow:
+    0 28px 80px rgba(47, 63, 112, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.custom-embed-shell-cropped .custom-embed-frame {
+  height: calc(100% + 142px);
+  transform: translateY(-128px);
+  transform-origin: top center;
+}
+
+.custom-embed-shell-recharge::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 0;
+  z-index: 8;
+  height: 150px;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(248, 252, 255, 0), rgba(248, 252, 255, 0.96) 54%, rgba(255, 255, 255, 0.98)),
+    radial-gradient(circle at 20% 100%, rgba(20, 184, 166, 0.08), transparent 36%),
+    radial-gradient(circle at 86% 100%, rgba(59, 130, 246, 0.07), transparent 34%);
+}
+
+.custom-embed-footer-mask {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 9;
+  height: 84px;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0), rgba(248, 252, 255, 0.98) 30%, #ffffff 100%);
+}
+
+.dark .custom-embed-shell-recharge::after,
+.dark .custom-embed-footer-mask {
+  background:
+    linear-gradient(180deg, rgba(2, 8, 23, 0), rgba(2, 8, 23, 0.95) 54%, rgba(2, 8, 23, 0.98)),
+    radial-gradient(circle at 20% 100%, rgba(20, 184, 166, 0.1), transparent 36%);
+}
+
+@media (min-width: 1280px) {
+  .custom-page-layout-featured {
+    height: clamp(660px, calc(100vh - 7rem), 1120px);
+  }
+}
+
+@media (max-width: 1023px) {
+  .custom-page-wide {
+    max-width: 100%;
+  }
+
+  .custom-page-layout,
+  .custom-page-layout-featured {
+    height: calc(100dvh - 5.25rem);
+  }
+
+  .custom-page-card-featured,
+  .custom-embed-shell,
+  .custom-embed-shell-featured {
+    border-radius: 24px;
+  }
+}
+
+@media (max-width: 640px) {
+  .custom-page-layout,
+  .custom-page-layout-featured {
+    height: calc(100dvh - 4.25rem);
+  }
+
+  .custom-page-card-featured,
+  .custom-embed-shell,
+  .custom-embed-shell-featured {
+    border-radius: 20px;
+  }
+
+  .custom-open-fab {
+    right: 0.75rem;
+    top: 0.75rem;
+    padding-inline: 0.75rem;
+  }
+
+  .custom-embed-shell-cropped .custom-embed-frame {
+    height: calc(100% + 102px);
+    transform: translateY(-88px);
+  }
+
+  .custom-embed-shell-recharge::after {
+    height: 112px;
+  }
+
+  .custom-embed-footer-mask {
+    height: 64px;
+  }
 }
 </style>
 

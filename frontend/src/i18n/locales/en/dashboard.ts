@@ -532,11 +532,32 @@ export default {
     invitees: {
       title: 'Invited Users',
       empty: 'No invited users yet',
+      detail: 'View Details',
       columns: {
         email: 'Email',
         username: 'Username',
         rebate: 'Rebate',
         joinedAt: 'Joined At'
+      }
+    },
+    inviteeDetail: {
+      title: 'Invitee Details',
+      totalRecharged: 'Total Recharged',
+      totalConsumed: 'Total Consumed',
+      rechargeRecords: 'Recharge Records',
+      dailyUsage: 'Daily Usage',
+      noRecharge: 'No recharge records',
+      noUsage: 'No usage records',
+      loadFailed: 'Failed to load invitee details',
+      columns: {
+        time: 'Time',
+        code: 'Code',
+        amount: 'Amount',
+        date: 'Date',
+        inputTokens: 'Input Tokens',
+        outputTokens: 'Output Tokens',
+        totalTokens: 'Total Tokens',
+        consumed: 'Consumed'
       }
     },
     tips: {

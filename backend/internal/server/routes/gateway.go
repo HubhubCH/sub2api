@@ -1,7 +1,11 @@
 package routes
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"net/http"
+	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
@@ -42,7 +46,7 @@ func RegisterGatewayRoutes(
 	isOpenAIGatewayPlatform := func(c *gin.Context) bool {
 		return getGroupPlatform(c) == service.PlatformOpenAI
 	}
-	imagesHandler := func(c *gin.Context) {
+	rawImagesHandler := func(c *gin.Context) {
 		switch getGroupPlatform(c) {
 		case service.PlatformOpenAI:
 			h.OpenAIGateway.Images(c)
@@ -58,7 +62,15 @@ func RegisterGatewayRoutes(
 			})
 		}
 	}
-	videoGenerationHandler := func(c *gin.Context) {
+	imagesHandler := func(c *gin.Context) {
+		h.OpenAIGateway.PersistImageGeneration(c, rawImagesHandler)
+	}
+	rawVideoGenerationHandler := func(c *gin.Context) {
+		provider := videoGenerationProvider(c)
+		if provider != "" && !(provider == "grok" && getGroupPlatform(c) == service.PlatformGrok) {
+			h.OpenAIGateway.VideoProviderGeneration(c, provider)
+			return
+		}
 		if getGroupPlatform(c) == service.PlatformGrok {
 			h.OpenAIGateway.GrokVideoGeneration(c)
 			return
@@ -71,9 +83,72 @@ func RegisterGatewayRoutes(
 			},
 		})
 	}
-	videoStatusHandler := func(c *gin.Context) {
-		if getGroupPlatform(c) == service.PlatformGrok {
+	videoGenerationHandler := func(c *gin.Context) {
+		h.OpenAIGateway.PersistVideoGeneration(c, rawVideoGenerationHandler)
+	}
+	rawVideoStatusHandler := func(c *gin.Context) {
+		provider := strings.ToLower(strings.TrimSpace(c.Query("provider")))
+		if provider == "" {
+			if getGroupPlatform(c) == service.PlatformOpenAI {
+				h.OpenAIGateway.VideoProviderStatus(c, "")
+				return
+			}
+			if getGroupPlatform(c) == service.PlatformGrok {
+				h.OpenAIGateway.GrokVideoStatus(c)
+				return
+			}
+			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
+			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Videos API is not supported for this platform"}})
+			return
+		}
+		if provider == "agnes" || (provider == "grok" && getGroupPlatform(c) == service.PlatformOpenAI) {
+			h.OpenAIGateway.VideoProviderStatus(c, provider)
+			return
+		}
+		if provider == "grok" && getGroupPlatform(c) == service.PlatformGrok {
 			h.OpenAIGateway.GrokVideoStatus(c)
+			return
+		}
+		if provider != "grok" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"type": "invalid_request_error", "message": "Unsupported video provider: " + provider}})
+			return
+		}
+		service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": gin.H{
+				"type":    "not_found_error",
+				"message": "Videos API is not supported for this platform",
+			},
+		})
+	}
+	videoStatusHandler := func(c *gin.Context) {
+		h.OpenAIGateway.PersistVideoStatus(c, rawVideoStatusHandler)
+	}
+	videoContentHandler := func(c *gin.Context) {
+		provider := strings.ToLower(strings.TrimSpace(c.Query("provider")))
+		if provider == "" {
+			if getGroupPlatform(c) == service.PlatformOpenAI {
+				h.OpenAIGateway.VideoProviderContent(c, "")
+				return
+			}
+			if getGroupPlatform(c) == service.PlatformGrok {
+				h.OpenAIGateway.GrokVideoContent(c)
+				return
+			}
+			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
+			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Videos API is not supported for this platform"}})
+			return
+		}
+		if provider == "agnes" || (provider == "grok" && getGroupPlatform(c) == service.PlatformOpenAI) {
+			h.OpenAIGateway.VideoProviderContent(c, provider)
+			return
+		}
+		if provider == "grok" && getGroupPlatform(c) == service.PlatformGrok {
+			h.OpenAIGateway.GrokVideoContent(c)
+			return
+		}
+		if provider != "grok" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"type": "invalid_request_error", "message": "Unsupported video provider: " + provider}})
 			return
 		}
 		service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
@@ -85,6 +160,10 @@ func RegisterGatewayRoutes(
 		})
 	}
 	videoEditHandler := func(c *gin.Context) {
+		if provider := videoGenerationProvider(c); provider == "grok" {
+			h.OpenAIGateway.VideoProviderEdit(c, provider)
+			return
+		}
 		if getGroupPlatform(c) == service.PlatformGrok {
 			h.OpenAIGateway.GrokVideoEdit(c)
 			return
@@ -93,6 +172,10 @@ func RegisterGatewayRoutes(
 		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Videos API is not supported for this platform"}})
 	}
 	videoExtensionHandler := func(c *gin.Context) {
+		if provider := videoGenerationProvider(c); provider == "grok" {
+			h.OpenAIGateway.VideoProviderExtension(c, provider)
+			return
+		}
 		if getGroupPlatform(c) == service.PlatformGrok {
 			h.OpenAIGateway.GrokVideoExtension(c)
 			return
@@ -201,8 +284,10 @@ func RegisterGatewayRoutes(
 		gateway.DELETE("/images/batches/:id", h.BatchImage.DeleteRecord)
 		gateway.DELETE("/images/batches/:id/outputs", h.BatchImage.DeleteOutputs)
 		gateway.POST("/videos/generations", videoGenerationHandler)
+		gateway.POST("/videos", videoGenerationHandler)
 		gateway.POST("/videos/edits", videoEditHandler)
 		gateway.POST("/videos/extensions", videoExtensionHandler)
+		gateway.GET("/videos/:request_id/content", videoContentHandler)
 		gateway.GET("/videos/:request_id", videoStatusHandler)
 	}
 
@@ -270,8 +355,10 @@ func RegisterGatewayRoutes(
 	r.POST("/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, imagesHandler)
 	r.POST("/images/edits", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, imagesHandler)
 	r.POST("/videos/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, videoGenerationHandler)
+	r.POST("/videos", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, videoGenerationHandler)
 	r.POST("/videos/edits", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, videoEditHandler)
 	r.POST("/videos/extensions", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, videoExtensionHandler)
+	r.GET("/videos/:request_id/content", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, videoContentHandler)
 	r.GET("/videos/:request_id", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, videoStatusHandler)
 
 	// Antigravity 模型列表
@@ -307,6 +394,39 @@ func RegisterGatewayRoutes(
 		antigravityV1Beta.POST("/models/*modelAction", h.Gateway.GeminiV1BetaModels)
 	}
 
+}
+
+func videoGenerationProvider(c *gin.Context) string {
+	if c == nil || c.Request == nil || c.Request.Body == nil {
+		return ""
+	}
+	body, err := io.ReadAll(c.Request.Body)
+	c.Request.Body = io.NopCloser(bytes.NewReader(body))
+	if err != nil || len(body) == 0 {
+		return ""
+	}
+	var payload struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	if provider := strings.ToLower(strings.TrimSpace(payload.Provider)); provider != "" {
+		return provider
+	}
+	model := strings.ToLower(strings.TrimSpace(payload.Model))
+	switch model {
+	case service.AgnesVideoModel, service.AgnesVideoModelAlias:
+		return "agnes"
+	case "grok-imagine-video", "grok-imagine-video-1.5", "sora-2", "sora-2-pro":
+		return "grok"
+	}
+	// 动态发现的第三方 Grok 兼容模型不限于内置别名；Agnes 标准模型已在上方处理。
+	if strings.Contains(model, "video") || strings.Contains(model, "sora") {
+		return "grok"
+	}
+	return ""
 }
 
 // getGroupPlatform extracts the group platform from the API Key stored in context.

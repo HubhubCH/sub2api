@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"database/sql"
+	"os"
+	"strings"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -579,6 +581,8 @@ var ProviderSet = wire.NewSet(
 	ProvideBatchImageModelPricingResolver,
 	NewBatchImagePublicService,
 	NewBatchImageDownloadService,
+	NewVideoTaskService,
+	ProvideGenerationRecordService,
 	ProvideBatchImageCleanupService,
 	ProvideBatchImageWorkerRuntime,
 	wire.Bind(new(AccountRuntimeBlocker), new(*OpenAIGatewayService)),
@@ -652,6 +656,7 @@ var ProviderSet = wire.NewSet(
 	NewModelPricingResolver,
 	NewContentModerationService,
 	NewAffiliateService,
+	ProvideTokenLeaderboardService,
 	ProvidePaymentConfigService,
 	ProvidePaymentService,
 	ProvidePaymentOrderExpiryService,
@@ -661,6 +666,22 @@ var ProviderSet = wire.NewSet(
 	NewChannelMonitorRequestTemplateService,
 	ProvideUserPlatformQuotaUsageFlusher,
 )
+
+// ProvideTokenLeaderboardService 创建并启动每日 Token 排行榜结算任务。
+func ProvideTokenLeaderboardService(repo TokenLeaderboardRepository, authCacheInvalidator APIKeyAuthCacheInvalidator, billingCacheService *BillingCacheService) *TokenLeaderboardService {
+	enabled := strings.EqualFold(strings.TrimSpace(os.Getenv("TOKEN_LEADERBOARD_ENABLED")), "true")
+	svc := NewTokenLeaderboardService(repo, authCacheInvalidator, billingCacheService, enabled)
+	svc.Start()
+	return svc
+}
+
+// ProvideGenerationRecordService 创建并启动生成记录保留期清理任务。
+func ProvideGenerationRecordService(repo GenerationRecordRepository, gateway *OpenAIGatewayService, accountRepo AccountRepository) *GenerationRecordService {
+	svc := NewGenerationRecordService(repo)
+	svc.SetVideoStatusPoller(NewGatewayGenerationVideoStatusPoller(gateway, accountRepo))
+	svc.Start()
+	return svc
+}
 
 // ProvideUserPlatformQuotaUsageFlusher 创建并启动 UserPlatformQuotaUsageFlusher。
 func ProvideUserPlatformQuotaUsageFlusher(cfg *config.Config, cache BillingCache, quotaRepo UserPlatformQuotaRepository, tw *TimingWheelService) *UserPlatformQuotaUsageFlusher {

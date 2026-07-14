@@ -104,6 +104,22 @@ func TestSettingService_GetPublicSettings_ExposesAllowUserViewErrorRequests(t *t
 	require.True(t, settings.AllowUserViewErrorRequests)
 }
 
+func TestSettingService_GetPublicSettings_ExposesUsableTokenLeaderboard(t *testing.T) {
+	t.Setenv("TOKEN_LEADERBOARD_ENABLED", "true")
+	t.Setenv("TOKEN_LEADERBOARD_ANON_SALT", "private-test-salt")
+	t.Setenv("JWT_SECRET", "")
+	svc := NewSettingService(&settingPublicRepoStub{values: map[string]string{}}, &config.Config{})
+
+	settings, err := svc.GetPublicSettings(context.Background())
+	require.NoError(t, err)
+	require.True(t, settings.TokenLeaderboardEnabled)
+
+	t.Setenv("TOKEN_LEADERBOARD_ANON_SALT", "")
+	settings, err = svc.GetPublicSettings(context.Background())
+	require.NoError(t, err)
+	require.False(t, settings.TokenLeaderboardEnabled)
+}
+
 func TestSettingService_GetPublicSettings_ExposesWeChatOAuthModeCapabilities(t *testing.T) {
 	svc := NewSettingService(&settingPublicRepoStub{
 		values: map[string]string{

@@ -17,7 +17,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// GrokImages handles xAI image generation/editing through Grok groups.
+// GrokImages 处理 Grok 分组的 xAI 图片生成和编辑。
 func (h *OpenAIGatewayHandler) GrokImages(c *gin.Context) {
 	endpoint := service.GrokMediaEndpointImagesGenerations
 	if strings.Contains(c.Request.URL.Path, "/images/edits") {
@@ -26,24 +26,29 @@ func (h *OpenAIGatewayHandler) GrokImages(c *gin.Context) {
 	h.handleGrokMedia(c, endpoint, "")
 }
 
-// GrokVideoGeneration handles xAI video generation through Grok groups.
+// GrokVideoGeneration 通过持久任务绑定处理 Grok 视频生成。
 func (h *OpenAIGatewayHandler) GrokVideoGeneration(c *gin.Context) {
-	h.handleGrokMedia(c, service.GrokMediaEndpointVideosGenerations, "")
+	h.VideoProviderGeneration(c, "grok")
 }
 
-// GrokVideoEdit handles asynchronous xAI video edits through Grok groups.
+// GrokVideoEdit 通过持久任务绑定处理异步视频编辑。
 func (h *OpenAIGatewayHandler) GrokVideoEdit(c *gin.Context) {
-	h.handleGrokMedia(c, service.GrokMediaEndpointVideosEdits, "")
+	h.VideoProviderEdit(c, "grok")
 }
 
-// GrokVideoExtension handles asynchronous xAI video extensions through Grok groups.
+// GrokVideoExtension 通过持久任务绑定处理异步视频扩展。
 func (h *OpenAIGatewayHandler) GrokVideoExtension(c *gin.Context) {
-	h.handleGrokMedia(c, service.GrokMediaEndpointVideosExtensions, "")
+	h.VideoProviderExtension(c, "grok")
 }
 
-// GrokVideoStatus handles xAI video status retrieval through Grok groups.
+// GrokVideoStatus 按数据库中的原账号绑定查询视频状态。
 func (h *OpenAIGatewayHandler) GrokVideoStatus(c *gin.Context) {
-	h.handleGrokMedia(c, service.GrokMediaEndpointVideoStatus, c.Param("request_id"))
+	h.VideoProviderStatus(c, "grok")
+}
+
+// GrokVideoContent 按数据库中的原账号绑定读取视频内容。
+func (h *OpenAIGatewayHandler) GrokVideoContent(c *gin.Context) {
+	h.VideoProviderContent(c, "grok")
 }
 
 func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.GrokMediaEndpoint, requestID string) {
@@ -95,11 +100,14 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 	contentType := c.GetHeader("Content-Type")
 	requestInfo := service.ParseGrokMediaRequest(contentType, body)
 	requestModel := requestInfo.Model
+	if !endpoint.RequiresRequestBody() {
+		requestModel = strings.TrimSpace(c.Query("model"))
+	}
 	if endpoint.IsGenerationRequest() && strings.TrimSpace(requestModel) == "" {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "model is required")
 		return
 	}
-	if endpoint == service.GrokMediaEndpointVideoStatus && strings.TrimSpace(requestID) == "" {
+	if !endpoint.RequiresRequestBody() && strings.TrimSpace(requestID) == "" {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "request_id is required")
 		return
 	}
@@ -159,7 +167,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		sessionSeed = []byte(requestID)
 	}
 	sessionHash := h.gatewayService.GenerateExplicitSessionHash(c, sessionSeed)
-	if endpoint == service.GrokMediaEndpointVideoStatus {
+	if !endpoint.RequiresRequestBody() {
 		sessionHash = service.GrokMediaVideoRequestSessionHash(requestID)
 	}
 	requestCtx := c.Request.Context()
@@ -308,7 +316,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		}
 
 		h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
-		if endpoint.IsGenerationRequest() && strings.TrimSpace(result.ResponseID) != "" {
+		if endpoint.IsVideoSubmission() && result != nil && strings.TrimSpace(result.ResponseID) != "" {
 			if err := h.gatewayService.BindGrokMediaVideoRequestAccount(requestCtx, apiKey.GroupID, result.ResponseID, account.ID); err != nil {
 				reqLog.Warn("grok_media.bind_video_request_account_failed",
 					zap.Int64("account_id", account.ID),
@@ -317,8 +325,8 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 				)
 			}
 		}
-		if shouldRecordGrokMediaUsage(endpoint, requestModel) {
-			recordGrokMediaUsage(c, h, reqLog, apiKey, subject, subscription, account, result, requestModel, body, requestID)
+		if shouldRecordGrokMediaUsage(endpoint, requestModel) && result != nil {
+			recordOpenAIMediaUsage(c, h, reqLog, apiKey, subject, subscription, account, result, requestModel, body, requestID)
 		}
 		reqLog.Debug("grok_media.request_completed",
 			zap.Int64("account_id", account.ID),
@@ -332,7 +340,7 @@ func shouldRecordGrokMediaUsage(endpoint service.GrokMediaEndpoint, requestModel
 	return endpoint.IsGenerationRequest() && strings.TrimSpace(requestModel) != ""
 }
 
-func recordGrokMediaUsage(
+func recordOpenAIMediaUsage(
 	c *gin.Context,
 	h *OpenAIGatewayHandler,
 	reqLog *zap.Logger,

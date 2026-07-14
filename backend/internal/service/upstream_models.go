@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -80,6 +81,9 @@ func (s *AccountTestService) FetchUpstreamSupportedModels(ctx context.Context, a
 	if account == nil {
 		return nil, newUpstreamModelSyncConfigError("Account is required", nil)
 	}
+	if isAgnesVideoModelSyncAccount(account) {
+		return []string{AgnesVideoModel}, nil
+	}
 
 	if account.Platform == PlatformAntigravity && account.Type != AccountTypeAPIKey {
 		return s.fetchAntigravityOAuthUpstreamModels(ctx, account)
@@ -125,6 +129,25 @@ func (s *AccountTestService) FetchUpstreamSupportedModels(ctx context.Context, a
 	}
 
 	return models, nil
+}
+
+func isAgnesVideoModelSyncAccount(account *Account) bool {
+	if account == nil || !account.IsOpenAIApiKey() {
+		return false
+	}
+
+	baseURL, err := url.Parse(strings.TrimSpace(account.GetOpenAIBaseURL()))
+	if err != nil || baseURL == nil || baseURL.Host == "" {
+		return false
+	}
+	switch strings.ToLower(baseURL.Scheme) {
+	case "http", "https":
+	default:
+		return false
+	}
+
+	hostname := strings.ToLower(strings.TrimSuffix(baseURL.Hostname(), "."))
+	return hostname == "api.agnes-ai.com" || hostname == "apihub.agnes-ai.com"
 }
 
 func (s *AccountTestService) buildUpstreamModelsRequest(ctx context.Context, account *Account) (*http.Request, error) {

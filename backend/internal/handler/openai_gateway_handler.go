@@ -34,6 +34,8 @@ type OpenAIGatewayHandler struct {
 	errorPassthroughService  *service.ErrorPassthroughService
 	contentModerationService *service.ContentModerationService
 	opsService               *service.OpsService
+	videoTaskService         *service.VideoTaskService
+	generationRecordService  *service.GenerationRecordService
 	concurrencyHelper        *ConcurrencyHelper
 	imageLimiter             *imageConcurrencyLimiter
 	maxAccountSwitches       int
@@ -145,6 +147,13 @@ func NewOpenAIGatewayHandler(
 		imageLimiter:             &imageConcurrencyLimiter{},
 		maxAccountSwitches:       maxAccountSwitches,
 		cfg:                      cfg,
+	}
+}
+
+// SetVideoTaskService 注入异步视频任务的持久跟踪服务。
+func (h *OpenAIGatewayHandler) SetVideoTaskService(videoTaskService *service.VideoTaskService) {
+	if h != nil {
+		h.videoTaskService = videoTaskService
 	}
 }
 

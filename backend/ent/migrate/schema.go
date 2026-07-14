@@ -1985,6 +1985,49 @@ var (
 			},
 		},
 	}
+	// VideoTasksColumns holds the columns for the "video_tasks" table.
+	VideoTasksColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "updated_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "provider", Type: field.TypeString, Size: 32},
+		{Name: "upstream_task_id", Type: field.TypeString, Size: 255},
+		{Name: "account_id", Type: field.TypeInt64},
+		{Name: "group_id", Type: field.TypeInt64},
+		{Name: "user_id", Type: field.TypeInt64},
+		{Name: "api_key_id", Type: field.TypeInt64},
+		{Name: "model", Type: field.TypeString, Size: 128},
+		{Name: "status", Type: field.TypeString, Size: 32, Default: "submitted"},
+		{Name: "expires_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+	}
+	// VideoTasksTable holds the schema information for the "video_tasks" table.
+	VideoTasksTable = &schema.Table{
+		Name:       "video_tasks",
+		Columns:    VideoTasksColumns,
+		PrimaryKey: []*schema.Column{VideoTasksColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "videotask_provider_account_id_upstream_task_id",
+				Unique:  true,
+				Columns: []*schema.Column{VideoTasksColumns[3], VideoTasksColumns[5], VideoTasksColumns[4]},
+			},
+			{
+				Name:    "videotask_user_id_api_key_id_provider_upstream_task_id",
+				Unique:  false,
+				Columns: []*schema.Column{VideoTasksColumns[7], VideoTasksColumns[8], VideoTasksColumns[3], VideoTasksColumns[4]},
+			},
+			{
+				Name:    "videotask_expires_at",
+				Unique:  false,
+				Columns: []*schema.Column{VideoTasksColumns[11]},
+			},
+			{
+				Name:    "videotask_account_id",
+				Unique:  false,
+				Columns: []*schema.Column{VideoTasksColumns[5]},
+			},
+		},
+	}
 	// Tables holds all the tables in the schema.
 	Tables = []*schema.Table{
 		APIKeysTable,
@@ -2025,6 +2068,7 @@ var (
 		UserAttributeValuesTable,
 		UserPlatformQuotasTable,
 		UserSubscriptionsTable,
+		VideoTasksTable,
 	}
 )
 
@@ -2177,5 +2221,8 @@ func init() {
 	UserSubscriptionsTable.ForeignKeys[2].RefTable = UsersTable
 	UserSubscriptionsTable.Annotation = &entsql.Annotation{
 		Table: "user_subscriptions",
+	}
+	VideoTasksTable.Annotation = &entsql.Annotation{
+		Table: "video_tasks",
 	}
 }

@@ -293,6 +293,76 @@ func TestFetchUpstreamSupportedModelsParsesOpenAIResponse(t *testing.T) {
 	require.Equal(t, "Bearer openai-key", upstream.lastReq.Header.Get("Authorization"))
 }
 
+func TestFetchUpstreamSupportedModelsAgnesReturnsStaticModelWithoutHTTP(t *testing.T) {
+	t.Parallel()
+
+	for _, baseURL := range []string{
+		"https://api.agnes-ai.com",
+		"https://apihub.agnes-ai.com/v1",
+	} {
+		baseURL := baseURL
+		t.Run(baseURL, func(t *testing.T) {
+			t.Parallel()
+
+			upstream := &httpUpstreamRecorder{err: errors.New("Agnes model sync must not make an HTTP request")}
+			svc := &AccountTestService{
+				httpUpstream: upstream,
+				cfg:          upstreamModelSyncTestConfig(),
+			}
+
+			models, err := svc.FetchUpstreamSupportedModels(context.Background(), &Account{
+				ID:       10,
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeAPIKey,
+				Credentials: map[string]any{
+					"api_key":  "agnes-key",
+					"base_url": baseURL,
+				},
+			})
+			require.NoError(t, err)
+			require.Equal(t, []string{AgnesVideoModel}, models)
+			require.Nil(t, upstream.lastReq)
+			require.Empty(t, upstream.requests)
+		})
+	}
+}
+
+func TestIsAgnesVideoModelSyncAccountRequiresExactHostAndOpenAIAPIKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		platform string
+		typeName string
+		baseURL  string
+		want     bool
+	}{
+		{name: "api host", platform: PlatformOpenAI, typeName: AccountTypeAPIKey, baseURL: "https://api.agnes-ai.com", want: true},
+		{name: "apihub host", platform: PlatformOpenAI, typeName: AccountTypeAPIKey, baseURL: "https://apihub.agnes-ai.com/v1", want: true},
+		{name: "lookalike host", platform: PlatformOpenAI, typeName: AccountTypeAPIKey, baseURL: "https://api.agnes-ai.com.evil.invalid", want: false},
+		{name: "ordinary OpenAI host", platform: PlatformOpenAI, typeName: AccountTypeAPIKey, baseURL: "https://api.openai.com", want: false},
+		{name: "wrong platform", platform: PlatformGrok, typeName: AccountTypeAPIKey, baseURL: "https://api.agnes-ai.com", want: false},
+		{name: "wrong account type", platform: PlatformOpenAI, typeName: AccountTypeOAuth, baseURL: "https://api.agnes-ai.com", want: false},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			account := &Account{
+				Platform: tt.platform,
+				Type:     tt.typeName,
+				Credentials: map[string]any{
+					"api_key":  "test-key",
+					"base_url": tt.baseURL,
+				},
+			}
+			require.Equal(t, tt.want, isAgnesVideoModelSyncAccount(account))
+		})
+	}
+}
+
 func TestFetchUpstreamSupportedModelsParsesGrokAPIKeyResponse(t *testing.T) {
 	t.Parallel()
 

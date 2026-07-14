@@ -72,11 +72,44 @@ type AffiliateSummary struct {
 }
 
 type AffiliateInvitee struct {
-	UserID      int64      `json:"user_id"`
-	Email       string     `json:"email"`
-	Username    string     `json:"username"`
-	CreatedAt   *time.Time `json:"created_at,omitempty"`
-	TotalRebate float64    `json:"total_rebate"`
+	UserID              int64      `json:"user_id"`
+	InviterID           int64      `json:"inviter_id"`
+	Email               string     `json:"email"`
+	Username            string     `json:"username"`
+	Level               int        `json:"level"`
+	CreatedAt           *time.Time `json:"created_at,omitempty"`
+	TotalRebate         float64    `json:"total_rebate"`
+	TotalRecharged      float64    `json:"total_recharged"`
+	LastRechargedAmount float64    `json:"last_recharged_amount"`
+	LastRechargedAt     *time.Time `json:"last_recharged_at,omitempty"`
+	TotalConsumed       float64    `json:"total_consumed"`
+	LastUsedAt          *time.Time `json:"last_used_at,omitempty"`
+}
+
+type AffiliateInviteeRechargeRecord struct {
+	Code   string    `json:"code"`
+	Value  float64   `json:"value"`
+	Type   string    `json:"type"`
+	UsedAt time.Time `json:"used_at"`
+}
+
+type AffiliateInviteeDailyUsage struct {
+	Date         string  `json:"date"`
+	Requests     int64   `json:"requests"`
+	InputTokens  int64   `json:"input_tokens"`
+	OutputTokens int64   `json:"output_tokens"`
+	TotalTokens  int64   `json:"total_tokens"`
+	ActualCost   float64 `json:"actual_cost"`
+}
+
+type AffiliateInviteeDetail struct {
+	UserID          int64                            `json:"user_id"`
+	Email           string                           `json:"email"`
+	Username        string                           `json:"username"`
+	TotalRecharged  float64                          `json:"total_recharged"`
+	TotalConsumed   float64                          `json:"total_consumed"`
+	RechargeRecords []AffiliateInviteeRechargeRecord `json:"recharge_records"`
+	DailyUsage      []AffiliateInviteeDailyUsage     `json:"daily_usage"`
 }
 
 type AffiliateDetail struct {
@@ -114,6 +147,7 @@ type AffiliateRepository interface {
 	ListAffiliateRebateRecords(ctx context.Context, filter AffiliateRecordFilter) ([]AffiliateRebateRecord, int64, error)
 	ListAffiliateTransferRecords(ctx context.Context, filter AffiliateRecordFilter) ([]AffiliateTransferRecord, int64, error)
 	GetAffiliateUserOverview(ctx context.Context, userID int64) (*AffiliateUserOverview, error)
+	GetInviteeDetail(ctx context.Context, inviterID, inviteeID int64, days int) (*AffiliateInviteeDetail, error)
 }
 
 // AffiliateAdminFilter 列表筛选条件
@@ -433,6 +467,7 @@ func (s *AffiliateService) listInvitees(ctx context.Context, inviterID int64) ([
 	}
 	for i := range invitees {
 		invitees[i].Email = maskEmail(invitees[i].Email)
+		invitees[i].Username = maskUsername(invitees[i].Username)
 	}
 	return invitees, nil
 }
@@ -475,6 +510,26 @@ func maskSegment(s string) string {
 		return string(r[0]) + "***"
 	}
 	return string(r[0]) + "***"
+}
+
+func maskRedeemCode(code string) string {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return ""
+	}
+	runes := []rune(code)
+	if len(runes) <= 4 {
+		return "****"
+	}
+	return string(runes[:2]) + "***" + string(runes[len(runes)-2:])
+}
+
+func maskUsername(username string) string {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return ""
+	}
+	return maskSegment(username)
 }
 
 func (s *AffiliateService) invalidateAffiliateCaches(ctx context.Context, userID int64) {
@@ -606,6 +661,31 @@ func (s *AffiliateService) AdminGetUserOverview(ctx context.Context, userID int6
 		overview.RebateRatePercent = clampAffiliateRebateRate(overview.RebateRatePercent)
 	}
 	return overview, nil
+}
+
+func (s *AffiliateService) GetInviteeDetail(ctx context.Context, inviterID, inviteeID int64, days int) (*AffiliateInviteeDetail, error) {
+	if inviterID <= 0 || inviteeID <= 0 {
+		return nil, infraerrors.BadRequest("INVALID_USER", "invalid user")
+	}
+	if days <= 0 {
+		days = 30
+	}
+	if days > 180 {
+		days = 180
+	}
+	if s == nil || s.repo == nil {
+		return nil, infraerrors.ServiceUnavailable("SERVICE_UNAVAILABLE", "affiliate service unavailable")
+	}
+	detail, err := s.repo.GetInviteeDetail(ctx, inviterID, inviteeID, days)
+	if err != nil {
+		return nil, err
+	}
+	detail.Email = maskEmail(detail.Email)
+	detail.Username = maskUsername(detail.Username)
+	for i := range detail.RechargeRecords {
+		detail.RechargeRecords[i].Code = maskRedeemCode(detail.RechargeRecords[i].Code)
+	}
+	return detail, nil
 }
 
 func normalizeAffiliateRecordFilter(filter AffiliateRecordFilter) AffiliateRecordFilter {

@@ -27,12 +27,15 @@ func RegisterUserRoutes(
 			user.PUT("", h.User.UpdateProfile)
 			user.GET("/aff", h.User.GetAffiliate)
 			user.POST("/aff/transfer", h.User.TransferAffiliateQuota)
+			user.GET("/aff/invitees/:user_id/detail", h.User.GetAffiliateInviteeDetail)
 			user.POST("/account-bindings/email/send-code", h.User.SendEmailBindingCode)
 			user.POST("/account-bindings/email", h.User.BindEmailIdentity)
 			user.DELETE("/account-bindings/:provider", h.User.UnbindIdentity)
 			user.POST("/auth-identities/bind/start", h.User.StartIdentityBinding)
 			user.GET("/api-keys/:id/usage/daily", h.Usage.GetMyAPIKeyDailyUsage)
 			user.GET("/platform-quotas", h.User.GetMyPlatformQuotas)
+			user.GET("/generation-records", h.OpenAIGateway.ListGenerationRecords)
+			user.GET("/generation-records/:task_id/content/:index", h.OpenAIGateway.GenerationRecordContent)
 
 			// 通知邮箱管理
 			notifyEmail := user.Group("/notify-email")
@@ -92,6 +95,13 @@ func RegisterUserRoutes(
 			usage.GET("/dashboard/models", h.Usage.DashboardModels)
 			usage.GET("/dashboard/snapshot-v2", h.Usage.DashboardSnapshotV2)
 			usage.POST("/dashboard/api-keys-usage", h.Usage.DashboardAPIKeysUsage)
+		}
+
+		// Token 排行榜与积分钱包
+		tokenLeaderboard := authenticated.Group("/token-leaderboard")
+		{
+			tokenLeaderboard.GET("", h.TokenLeaderboard.Get)
+			tokenLeaderboard.POST("/exchange", h.TokenLeaderboard.Exchange)
 		}
 
 		// 公告（用户可见）

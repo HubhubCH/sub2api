@@ -537,11 +537,32 @@ export default {
     invitees: {
       title: '已邀请用户',
       empty: '暂无邀请记录',
+      detail: '查看明细',
       columns: {
         email: '邮箱',
         username: '用户名',
         rebate: '返利明细',
         joinedAt: '注册时间'
+      }
+    },
+    inviteeDetail: {
+      title: '邀请用户明细',
+      totalRecharged: '累计充值',
+      totalConsumed: '累计消费',
+      rechargeRecords: '充值记录',
+      dailyUsage: '每日用量',
+      noRecharge: '暂无充值记录',
+      noUsage: '暂无使用记录',
+      loadFailed: '加载邀请用户明细失败',
+      columns: {
+        time: '时间',
+        code: '兑换码',
+        amount: '金额',
+        date: '日期',
+        inputTokens: '输入 Token',
+        outputTokens: '输出 Token',
+        totalTokens: '总 Token',
+        consumed: '消费'
       }
     },
     tips: {

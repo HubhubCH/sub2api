@@ -306,3 +306,49 @@ func TestGetGrokBaseURLAllowsExplicitOAuthOverrideWhenUnsafeOverridesEnabled(t *
 
 	require.Equal(t, "https://custom.example.com/v1", account.GetGrokBaseURL())
 }
+
+func TestGetGrokMediaBaseURLSeparatesOAuthMediaFromCLIProxy(t *testing.T) {
+	tests := []struct {
+		name     string
+		account  Account
+		expected string
+	}{
+		{
+			name: "OAuth 默认媒体地址",
+			account: Account{
+				Type:        AccountTypeOAuth,
+				Platform:    PlatformGrok,
+				Credentials: map[string]any{},
+			},
+			expected: xai.DefaultBaseURL,
+		},
+		{
+			name: "OAuth CLI 代理切换到媒体 API",
+			account: Account{
+				Type:     AccountTypeOAuth,
+				Platform: PlatformGrok,
+				Credentials: map[string]any{
+					"base_url": xai.DefaultCLIBaseURL,
+				},
+			},
+			expected: xai.DefaultBaseURL,
+		},
+		{
+			name: "API Key 保留自定义媒体地址",
+			account: Account{
+				Type:     AccountTypeAPIKey,
+				Platform: PlatformGrok,
+				Credentials: map[string]any{
+					"base_url": "https://grok.example.com/v1",
+				},
+			},
+			expected: "https://grok.example.com/v1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.expected, tt.account.GetGrokMediaBaseURL())
+		})
+	}
+}

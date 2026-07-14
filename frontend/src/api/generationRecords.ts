@@ -1,0 +1,29 @@
+import { apiClient } from './client'
+
+export interface GenerationRecord {
+  task_id: string
+  api_key_id: number
+  media_type: 'image' | 'video'
+  provider: string
+  model: string
+  prompt_preview: string
+  status: string
+  upstream_task_id?: string
+  result?: { files?: string[]; urls?: string[] } | null
+  error_message?: string
+  created_at: string
+}
+
+export async function listGenerationRecords(limit = 30): Promise<GenerationRecord[]> {
+  const response = await apiClient.get<{ data: GenerationRecord[] }>('/user/generation-records', { params: { limit } })
+  return response.data.data || []
+}
+
+export async function getGenerationRecordContent(taskId: string, index = 0): Promise<Blob> {
+  const response = await apiClient.get(`/user/generation-records/${encodeURIComponent(taskId)}/content/${index}`, {
+    responseType: 'blob'
+  })
+  return response.data as Blob
+}
+
+export const generationRecordsAPI = { list: listGenerationRecords, content: getGenerationRecordContent }

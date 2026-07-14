@@ -14,7 +14,7 @@
         class="sidebar-logo flex h-9 w-9 items-center justify-center overflow-hidden rounded-xl shadow-glow transition-opacity hover:opacity-80"
         @click="handleMenuItemClick(homePath)"
       >
-        <img v-if="settingsLoaded" :src="siteLogo || '/logo.png'" alt="Logo" class="h-full w-full object-contain" />
+        <img v-if="settingsLoaded" :src="siteLogo || brandLogo" alt="Logo" class="h-full w-full object-contain" />
       </router-link>
       <div class="sidebar-brand" :class="{ 'sidebar-brand-collapsed': sidebarCollapsed }" :aria-hidden="sidebarCollapsed ? 'true' : 'false'">
         <router-link
@@ -147,6 +147,31 @@
       </template>
     </nav>
 
+    <router-link
+      v-if="showAffiliatePlanCard"
+      to="/affiliate"
+      class="affiliate-plan-card"
+      @click="handleMenuItemClick('/affiliate')"
+    >
+      <span class="affiliate-plan-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M12 2.75 20.25 8.2 12 21.25 3.75 8.2 12 2.75Z" fill="currentColor" opacity="0.16" />
+          <path d="M12 2.75 20.25 8.2 12 21.25 3.75 8.2 12 2.75Z" stroke="currentColor" stroke-width="1.65" stroke-linejoin="round" />
+          <path d="M8.35 8.35h7.3M8.35 8.35 12 21.25m3.65-12.9L12 21.25M8.35 8.35 12 2.75l3.65 5.6" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </span>
+      <span class="affiliate-plan-copy">
+        <span class="affiliate-plan-title">邀请返利计划</span>
+        <span class="affiliate-plan-subtitle">邀请好友，享受最高 15% 永久返利</span>
+        <span class="affiliate-plan-cta">
+          立即邀请
+          <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+            <path d="M7.5 4.75 12.75 10 7.5 15.25" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </span>
+      </span>
+    </router-link>
+
     <!-- Bottom Section -->
     <div class="mt-auto border-t border-gray-100 p-3 dark:border-dark-800">
       <!-- Theme Toggle -->
@@ -196,7 +221,7 @@ import VersionBadge from '@/components/common/VersionBadge.vue'
 import { sanitizeSvg } from '@/utils/sanitize'
 import { sanitizeUrl } from '@/utils/url'
 import { FeatureFlags, makeSidebarFlag } from '@/utils/featureFlags'
-import { useBatchImageAccess } from '@/composables/useBatchImageAccess'
+import brandLogo from '@/assets/icons/auric-cloud-logo.png'
 
 interface NavItem {
   path: string
@@ -242,7 +267,6 @@ const appStore = useAppStore()
 const authStore = useAuthStore()
 const onboardingStore = useOnboardingStore()
 const adminSettingsStore = useAdminSettingsStore()
-const { canUseBatchImage, refreshBatchImageAccess } = useBatchImageAccess()
 
 const sidebarCollapsed = computed(() => appStore.sidebarCollapsed)
 const mobileOpen = computed(() => appStore.mobileOpen)
@@ -292,7 +316,7 @@ const KeyIcon = {
     )
 }
 
-const BatchImageIcon = {
+const ImageIcon = {
   render: () =>
     h(
       'svg',
@@ -301,12 +325,27 @@ const BatchImageIcon = {
         h('path', {
           'stroke-linecap': 'round',
           'stroke-linejoin': 'round',
-          d: 'M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.25 2.25 0 00-1.906-1.059H9.554a2.25 2.25 0 00-1.906 1.059l-.821 1.316z'
+          d: 'M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316A2.25 2.25 0 0014.446 3.8H9.554a2.25 2.25 0 00-1.906 1.059l-.821 1.316z'
         }),
         h('path', {
           'stroke-linecap': 'round',
           'stroke-linejoin': 'round',
           d: 'M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0zM18.75 10.5h.008v.008h-.008V10.5z'
+        })
+      ]
+    )
+}
+
+const VideoIcon = {
+  render: () =>
+    h(
+      'svg',
+      { fill: 'none', viewBox: '0 0 24 24', stroke: 'currentColor', 'stroke-width': '1.5' },
+      [
+        h('path', {
+          'stroke-linecap': 'round',
+          'stroke-linejoin': 'round',
+          d: 'M15.75 10.5 20.47 7.76A.75.75 0 0121.6 8.4v7.2a.75.75 0 01-1.13.64l-4.72-2.74M4.5 6.75h9a2.25 2.25 0 012.25 2.25v6a2.25 2.25 0 01-2.25 2.25h-9A2.25 2.25 0 012.25 15V9A2.25 2.25 0 014.5 6.75z'
         })
       ]
     )
@@ -684,10 +723,10 @@ const flagChannelMonitor = makeSidebarFlag(FeatureFlags.channelMonitor)
 const flagPayment = makeSidebarFlag(FeatureFlags.payment)
 const flagAvailableChannels = makeSidebarFlag(FeatureFlags.availableChannels)
 const flagAffiliate = makeSidebarFlag(FeatureFlags.affiliate)
+const flagTokenLeaderboard = makeSidebarFlag(FeatureFlags.tokenLeaderboard)
 const flagRiskControl = makeSidebarFlag(FeatureFlags.riskControl)
 const flagOpsMonitoring = () => adminSettingsStore.opsMonitoringEnabled
 const flagAdminPayment = () => adminSettingsStore.paymentEnabled
-const flagBatchImageAccess = () => canUseBatchImage.value
 
 // buildSelfNavItems 构造用户自己的导航项（用户端主菜单和管理员的"我的账户"子菜单共享这组声明）。
 // withDashboard=true 时包含仪表盘（用户端），false 时不含（管理员的个人区已经有独立仪表盘入口）。
@@ -696,13 +735,19 @@ const flagBatchImageAccess = () => canUseBatchImage.value
 // 可用渠道紧挨渠道状态之上，让用户"先看自己能用什么、再看对应状态"。
 function buildSelfNavItems(withDashboard: boolean): NavItem[] {
   const items: NavItem[] = []
+  const customMenus = customMenuItemsForUser.value
+  const aiImageCustomMenus = customMenus.filter(isAiImageCustomMenu)
+  const regularCustomMenus = customMenus.filter((item) => !isAiImageCustomMenu(item))
   if (withDashboard) {
     items.push({ path: '/dashboard', label: t('nav.dashboard'), icon: DashboardIcon })
   }
   items.push(
     { path: '/keys', label: t('nav.apiKeys'), icon: KeyIcon },
-    { path: '/batch-image', label: t('nav.batchImage'), icon: BatchImageIcon, hideInSimpleMode: true, featureFlag: flagBatchImageAccess },
+    { path: '/batch-image', label: t('nav.batchImage'), icon: ImageIcon, hideInSimpleMode: true },
+    ...aiImageCustomMenus.map(customMenuToNavItem),
+    { path: '/video-generation', label: t('nav.videoGeneration'), icon: VideoIcon, hideInSimpleMode: true },
     { path: '/usage', label: t('nav.usage'), icon: ChartIcon, hideInSimpleMode: true },
+    { path: '/token-leaderboard', label: t('nav.tokenLeaderboard'), icon: ChartIcon, hideInSimpleMode: true, featureFlag: flagTokenLeaderboard },
     { path: '/available-channels', label: t('nav.availableChannels'), icon: ChannelIcon, hideInSimpleMode: true, featureFlag: flagAvailableChannels },
     { path: '/monitor', label: t('nav.channelStatus'), icon: SignalIcon, featureFlag: flagChannelMonitor },
     { path: '/subscriptions', label: t('nav.mySubscriptions'), icon: CreditCardIcon, hideInSimpleMode: true },
@@ -711,14 +756,45 @@ function buildSelfNavItems(withDashboard: boolean): NavItem[] {
     { path: '/redeem', label: t('nav.redeem'), icon: GiftIcon, hideInSimpleMode: true },
     { path: '/affiliate', label: t('nav.affiliate'), icon: UsersIcon, hideInSimpleMode: true, featureFlag: flagAffiliate },
     { path: '/profile', label: t('nav.profile'), icon: UserIcon },
-    ...customMenuItemsForUser.value.map((item): NavItem => ({
-      path: `/custom/${item.id}`,
-      label: item.label,
-      icon: null,
-      iconSvg: item.icon_svg,
-    })),
+    ...regularCustomMenus.map(customMenuToNavItem),
   )
   return items
+}
+
+function customMenuToNavItem(item: { id: string; label: string; icon_svg?: string }): NavItem {
+  return {
+    path: `/custom/${item.id}`,
+    label: item.label,
+    icon: getCustomMenuIcon(item.label),
+    iconSvg: customMenuUsesNativeIcon(item.label) ? undefined : item.icon_svg,
+  }
+}
+
+function isAiImageCustomMenu(item: { label: string }): boolean {
+  const normalized = item.label.trim().toLowerCase().replace(/\s+/g, '')
+  return normalized.includes('ai生图') || normalized.includes('生图')
+}
+
+function customMenuUsesNativeIcon(label: string): boolean {
+  const normalized = label.trim().toLowerCase()
+  return (
+    normalized.includes('充值') ||
+    normalized.includes('下载') ||
+    normalized.includes('payment') ||
+    normalized.includes('pay') ||
+    normalized.includes('download')
+  )
+}
+
+function getCustomMenuIcon(label: string): unknown {
+  const normalized = label.trim().toLowerCase()
+  if (normalized.includes('充值') || normalized.includes('payment') || normalized.includes('pay')) {
+    return RechargeSubscriptionIcon
+  }
+  if (normalized.includes('下载') || normalized.includes('download')) {
+    return ChannelIcon
+  }
+  return null
 }
 
 // finalizeNav 合并三重过滤：featureFlag 过滤 + simple 模式过滤。
@@ -729,6 +805,16 @@ function finalizeNav(items: NavItem[]): NavItem[] {
 
 // User navigation items (for regular users)
 const userNavItems = computed((): NavItem[] => finalizeNav(buildSelfNavItems(true)))
+
+const showAffiliatePlanCard = computed(() => {
+  return (
+    !isAdmin.value &&
+    !sidebarCollapsed.value &&
+    !appStore.backendModeEnabled &&
+    !authStore.isSimpleMode &&
+    flagAffiliate() !== false
+  )
+})
 
 // Personal navigation items (for admin's "My Account" section, without Dashboard).
 // Admins access 可用渠道 from this section just like regular users — there is no
@@ -922,7 +1008,6 @@ watch(
 )
 
 onMounted(() => {
-  void refreshBatchImageAccess()
   if (isAdmin.value) {
     adminSettingsStore.fetch()
   }
@@ -1058,6 +1143,122 @@ onBeforeUnmount(() => {
   opacity: 0;
   transform: translateX(-4px);
   pointer-events: none;
+}
+
+.affiliate-plan-card {
+  position: relative;
+  display: flex;
+  gap: 12px;
+  margin: 4px 4px 0;
+  padding: 14px;
+  overflow: hidden;
+  color: rgb(15 23 42);
+  text-decoration: none;
+  border-radius: 18px;
+  background:
+    linear-gradient(145deg, rgba(240, 253, 250, 0.96), rgba(239, 246, 255, 0.92)),
+    radial-gradient(circle at 15% 10%, rgba(45, 212, 191, 0.2), transparent 34%);
+  box-shadow:
+    inset 0 0 0 1px rgba(125, 211, 252, 0.5),
+    0 16px 36px rgba(45, 78, 145, 0.12);
+  transition:
+    transform 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.affiliate-plan-card:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    inset 0 0 0 1px rgba(45, 212, 191, 0.76),
+    0 22px 48px rgba(45, 78, 145, 0.17);
+}
+
+.affiliate-plan-icon {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  align-items: center;
+  justify-content: center;
+  color: rgb(13 148 136);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.75);
+  box-shadow: inset 0 0 0 1px rgba(94, 234, 212, 0.45);
+}
+
+.affiliate-plan-icon svg {
+  width: 24px;
+  height: 24px;
+}
+
+.affiliate-plan-copy {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.affiliate-plan-title {
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.affiliate-plan-subtitle {
+  margin-top: 3px;
+  color: rgb(71 85 105);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.affiliate-plan-cta {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  color: rgb(13 148 136);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.affiliate-plan-cta svg {
+  width: 15px;
+  height: 15px;
+  transition: transform 180ms ease;
+}
+
+.affiliate-plan-card:hover .affiliate-plan-cta svg {
+  transform: translateX(2px);
+}
+
+.dark .affiliate-plan-card {
+  color: rgb(248 250 252);
+  background:
+    linear-gradient(145deg, rgba(15, 23, 42, 0.95), rgba(19, 78, 74, 0.72)),
+    radial-gradient(circle at 10% 0%, rgba(20, 184, 166, 0.18), transparent 36%),
+    rgba(15, 23, 42, 0.96);
+  box-shadow:
+    inset 0 0 0 1px rgba(45, 212, 191, 0.28),
+    0 18px 42px rgba(0, 0, 0, 0.24);
+}
+
+.dark .affiliate-plan-icon {
+  color: rgb(153 246 228);
+  background: linear-gradient(145deg, rgba(19, 78, 74, 0.95), rgba(15, 23, 42, 0.92));
+  box-shadow:
+    inset 0 0 0 1px rgba(45, 212, 191, 0.32),
+    0 10px 24px rgba(0, 0, 0, 0.2);
+}
+
+.dark .affiliate-plan-subtitle {
+  color: rgb(204 251 241);
+}
+
+.dark .affiliate-plan-cta {
+  color: rgb(153 246 228);
 }
 
 /* Custom SVG icon in sidebar: constrain size without overriding uploaded SVG colors */

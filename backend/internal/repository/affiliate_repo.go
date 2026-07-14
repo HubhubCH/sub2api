@@ -347,20 +347,67 @@ func (r *affiliateRepository) ListInvitees(ctx context.Context, inviterID int64,
 	}
 	client := clientFromContext(ctx, r.client)
 	rows, err := client.QueryContext(ctx, `
-SELECT ua.user_id,
+WITH RECURSIVE descendants AS (
+    SELECT ua.user_id,
+           ua.inviter_id,
+           ua.created_at,
+           1 AS level
+    FROM user_affiliates ua
+    WHERE ua.inviter_id = $1
+    UNION ALL
+    SELECT child.user_id,
+           child.inviter_id,
+           child.created_at,
+           descendants.level + 1
+    FROM user_affiliates child
+    JOIN descendants ON child.inviter_id = descendants.user_id
+    WHERE descendants.level < 20
+)
+SELECT d.user_id,
+       d.inviter_id,
        COALESCE(u.email, ''),
        COALESCE(u.username, ''),
-       ua.created_at,
-       COALESCE(SUM(ual.amount), 0)::double precision AS total_rebate
-FROM user_affiliates ua
-LEFT JOIN users u ON u.id = ua.user_id
-LEFT JOIN user_affiliate_ledger ual
-       ON ual.user_id = $1
-      AND ual.source_user_id = ua.user_id
-      AND ual.action = 'accrue'
-WHERE ua.inviter_id = $1
-GROUP BY ua.user_id, u.email, u.username, ua.created_at
-ORDER BY ua.created_at DESC
+       d.level,
+       d.created_at,
+       COALESCE(rebate.total_rebate, 0)::double precision AS total_rebate,
+       COALESCE(recharge.total_recharged, 0)::double precision AS total_recharged,
+       COALESCE(recharge.last_recharged_amount, 0)::double precision AS last_recharged_amount,
+       recharge.last_recharged_at,
+       COALESCE(usage_stats.total_consumed, 0)::double precision AS total_consumed,
+       usage_stats.last_used_at
+FROM descendants d
+LEFT JOIN users u ON u.id = d.user_id
+LEFT JOIN LATERAL (
+    SELECT COALESCE(SUM(amount), 0)::double precision AS total_rebate
+    FROM user_affiliate_ledger
+    WHERE user_id = $1
+      AND action = 'accrue'
+      AND source_user_id = d.user_id
+) rebate ON TRUE
+LEFT JOIN LATERAL (
+    SELECT COALESCE(SUM(value), 0)::double precision AS total_recharged,
+           COALESCE((SELECT value::double precision
+                     FROM redeem_codes
+                     WHERE status = 'used'
+                       AND used_by = d.user_id
+                       AND value > 0
+                       AND type IN ('balance', 'admin_balance')
+                     ORDER BY used_at DESC
+                     LIMIT 1), 0)::double precision AS last_recharged_amount,
+           MAX(used_at) AS last_recharged_at
+    FROM redeem_codes
+    WHERE status = 'used'
+      AND used_by = d.user_id
+      AND value > 0
+      AND type IN ('balance', 'admin_balance')
+) recharge ON TRUE
+LEFT JOIN LATERAL (
+    SELECT COALESCE(SUM(actual_cost), 0)::double precision AS total_consumed,
+           MAX(created_at) AS last_used_at
+    FROM usage_logs
+    WHERE user_id = d.user_id
+) usage_stats ON TRUE
+ORDER BY d.level ASC, d.created_at DESC
 LIMIT $2`, inviterID, limit)
 	if err != nil {
 		return nil, err
@@ -371,16 +418,174 @@ LIMIT $2`, inviterID, limit)
 	for rows.Next() {
 		var item service.AffiliateInvitee
 		var createdAt time.Time
-		if err := rows.Scan(&item.UserID, &item.Email, &item.Username, &createdAt, &item.TotalRebate); err != nil {
+		var lastRechargedAt sql.NullTime
+		var lastUsedAt sql.NullTime
+		if err := rows.Scan(
+			&item.UserID,
+			&item.InviterID,
+			&item.Email,
+			&item.Username,
+			&item.Level,
+			&createdAt,
+			&item.TotalRebate,
+			&item.TotalRecharged,
+			&item.LastRechargedAmount,
+			&lastRechargedAt,
+			&item.TotalConsumed,
+			&lastUsedAt,
+		); err != nil {
 			return nil, err
 		}
 		item.CreatedAt = &createdAt
+		if lastRechargedAt.Valid {
+			item.LastRechargedAt = &lastRechargedAt.Time
+		}
+		if lastUsedAt.Valid {
+			item.LastUsedAt = &lastUsedAt.Time
+		}
 		invitees = append(invitees, item)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	return invitees, nil
+}
+
+func (r *affiliateRepository) GetInviteeDetail(ctx context.Context, inviterID, inviteeID int64, days int) (*service.AffiliateInviteeDetail, error) {
+	client := clientFromContext(ctx, r.client)
+	detail, err := queryAffiliateInviteeBase(ctx, client, inviterID, inviteeID)
+	if err != nil {
+		return nil, err
+	}
+
+	recharges, totalRecharged, err := queryAffiliateInviteeRecharges(ctx, client, inviteeID)
+	if err != nil {
+		return nil, err
+	}
+	dailyUsage, totalConsumed, err := queryAffiliateInviteeDailyUsage(ctx, client, inviteeID, days)
+	if err != nil {
+		return nil, err
+	}
+
+	detail.RechargeRecords = recharges
+	detail.DailyUsage = dailyUsage
+	detail.TotalRecharged = totalRecharged
+	detail.TotalConsumed = totalConsumed
+	return detail, nil
+}
+
+func queryAffiliateInviteeBase(ctx context.Context, client affiliateQueryExecer, inviterID, inviteeID int64) (*service.AffiliateInviteeDetail, error) {
+	rows, err := client.QueryContext(ctx, `
+WITH RECURSIVE descendants AS (
+    SELECT user_id, inviter_id, 1 AS depth
+    FROM user_affiliates
+    WHERE inviter_id = $1
+    UNION ALL
+    SELECT child.user_id, child.inviter_id, descendants.depth + 1
+    FROM user_affiliates child
+    JOIN descendants ON child.inviter_id = descendants.user_id
+    WHERE descendants.depth < 20
+)
+SELECT d.user_id,
+       COALESCE(u.email, ''),
+       COALESCE(u.username, '')
+FROM descendants d
+JOIN users u ON u.id = d.user_id
+WHERE d.user_id = $2
+LIMIT 1`, inviterID, inviteeID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return nil, service.ErrUserNotFound
+	}
+
+	var detail service.AffiliateInviteeDetail
+	if err := rows.Scan(&detail.UserID, &detail.Email, &detail.Username); err != nil {
+		return nil, err
+	}
+	return &detail, rows.Err()
+}
+
+func queryAffiliateInviteeRecharges(ctx context.Context, client affiliateQueryExecer, inviteeID int64) ([]service.AffiliateInviteeRechargeRecord, float64, error) {
+	rows, err := client.QueryContext(ctx, `
+SELECT code,
+       value::double precision,
+       type,
+       used_at
+FROM redeem_codes
+WHERE status = 'used'
+  AND used_by = $1
+  AND value > 0
+  AND type IN ('balance', 'admin_balance')
+ORDER BY used_at DESC`, inviteeID)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	records := make([]service.AffiliateInviteeRechargeRecord, 0)
+	var total float64
+	for rows.Next() {
+		var item service.AffiliateInviteeRechargeRecord
+		if err := rows.Scan(&item.Code, &item.Value, &item.Type, &item.UsedAt); err != nil {
+			return nil, 0, err
+		}
+		total += item.Value
+		records = append(records, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return records, total, nil
+}
+
+func queryAffiliateInviteeDailyUsage(ctx context.Context, client affiliateQueryExecer, inviteeID int64, days int) ([]service.AffiliateInviteeDailyUsage, float64, error) {
+	rows, err := client.QueryContext(ctx, `
+SELECT DATE(created_at) AS usage_date,
+       COUNT(*)::bigint,
+       COALESCE(SUM(input_tokens), 0)::bigint,
+       COALESCE(SUM(output_tokens), 0)::bigint,
+       COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens + cache_creation_5m_tokens + cache_creation_1h_tokens), 0)::bigint,
+       COALESCE(SUM(actual_cost), 0)::double precision
+FROM usage_logs
+WHERE user_id = $1
+  AND created_at >= NOW() - make_interval(days => $2)
+GROUP BY usage_date
+ORDER BY usage_date DESC`, inviteeID, days)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	records := make([]service.AffiliateInviteeDailyUsage, 0)
+	var total float64
+	for rows.Next() {
+		var item service.AffiliateInviteeDailyUsage
+		var day time.Time
+		if err := rows.Scan(
+			&day,
+			&item.Requests,
+			&item.InputTokens,
+			&item.OutputTokens,
+			&item.TotalTokens,
+			&item.ActualCost,
+		); err != nil {
+			return nil, 0, err
+		}
+		item.Date = day.Format("2006-01-02")
+		total += item.ActualCost
+		records = append(records, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return records, total, nil
 }
 
 func (r *affiliateRepository) ListAffiliateInviteRecords(ctx context.Context, filter service.AffiliateRecordFilter) ([]service.AffiliateInviteRecord, int64, error) {

@@ -44,6 +44,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/userattributevalue"
 	"github.com/Wei-Shaw/sub2api/ent/userplatformquota"
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
+	"github.com/Wei-Shaw/sub2api/ent/videotask"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
@@ -2330,6 +2331,39 @@ func init() {
 	usersubscriptionDescAssignedAt := usersubscriptionFields[12].Descriptor()
 	// usersubscription.DefaultAssignedAt holds the default value on creation for the assigned_at field.
 	usersubscription.DefaultAssignedAt = usersubscriptionDescAssignedAt.Default.(func() time.Time)
+	videotaskMixin := schema.VideoTask{}.Mixin()
+	videotaskMixinFields0 := videotaskMixin[0].Fields()
+	_ = videotaskMixinFields0
+	videotaskFields := schema.VideoTask{}.Fields()
+	_ = videotaskFields
+	// videotaskDescCreatedAt is the schema descriptor for created_at field.
+	videotaskDescCreatedAt := videotaskMixinFields0[0].Descriptor()
+	// videotask.DefaultCreatedAt holds the default value on creation for the created_at field.
+	videotask.DefaultCreatedAt = videotaskDescCreatedAt.Default.(func() time.Time)
+	// videotaskDescUpdatedAt is the schema descriptor for updated_at field.
+	videotaskDescUpdatedAt := videotaskMixinFields0[1].Descriptor()
+	// videotask.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	videotask.DefaultUpdatedAt = videotaskDescUpdatedAt.Default.(func() time.Time)
+	// videotask.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
+	videotask.UpdateDefaultUpdatedAt = videotaskDescUpdatedAt.UpdateDefault.(func() time.Time)
+	// videotaskDescProvider is the schema descriptor for provider field.
+	videotaskDescProvider := videotaskFields[0].Descriptor()
+	// videotask.ProviderValidator is a validator for the "provider" field. It is called by the builders before save.
+	videotask.ProviderValidator = videotaskDescProvider.Validators[0].(func(string) error)
+	// videotaskDescUpstreamTaskID is the schema descriptor for upstream_task_id field.
+	videotaskDescUpstreamTaskID := videotaskFields[1].Descriptor()
+	// videotask.UpstreamTaskIDValidator is a validator for the "upstream_task_id" field. It is called by the builders before save.
+	videotask.UpstreamTaskIDValidator = videotaskDescUpstreamTaskID.Validators[0].(func(string) error)
+	// videotaskDescModel is the schema descriptor for model field.
+	videotaskDescModel := videotaskFields[6].Descriptor()
+	// videotask.ModelValidator is a validator for the "model" field. It is called by the builders before save.
+	videotask.ModelValidator = videotaskDescModel.Validators[0].(func(string) error)
+	// videotaskDescStatus is the schema descriptor for status field.
+	videotaskDescStatus := videotaskFields[7].Descriptor()
+	// videotask.DefaultStatus holds the default value on creation for the status field.
+	videotask.DefaultStatus = videotaskDescStatus.Default.(string)
+	// videotask.StatusValidator is a validator for the "status" field. It is called by the builders before save.
+	videotask.StatusValidator = videotaskDescStatus.Validators[0].(func(string) error)
 }
 
 const (

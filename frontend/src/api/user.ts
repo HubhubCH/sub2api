@@ -15,6 +15,7 @@ import type {
   NotifyEmailEntry,
   UserAuthProvider,
   UserAffiliateDetail,
+  AffiliateInviteeDetail,
   AffiliateTransferResponse,
   PlatformQuotasResponse,
 } from '@/types'
@@ -186,6 +187,17 @@ export async function transferAffiliateQuota(): Promise<AffiliateTransferRespons
   return data
 }
 
+export async function getAffiliateInviteeDetail(
+  userId: number,
+  days: number = 30
+): Promise<AffiliateInviteeDetail> {
+  const { data } = await apiClient.get<AffiliateInviteeDetail>(
+    `/user/aff/invitees/${userId}/detail`,
+    { params: { days } }
+  )
+  return data
+}
+
 /**
  * 获取当前用户的平台限额 + 用量。
  */
@@ -209,6 +221,7 @@ export const userAPI = {
   startOAuthBinding,
   getAffiliateDetail,
   transferAffiliateQuota,
+  getAffiliateInviteeDetail,
   getMyPlatformQuotas,
 }
 

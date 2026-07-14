@@ -16,6 +16,8 @@ var ErrUpstreamResponseBodyTooLarge = errors.New("upstream response body too lar
 // 仅在 cfg 为 nil 时作为兜底（测试或极端场景）。
 const defaultUpstreamResponseReadMaxBytes = config.DefaultUpstreamResponseReadMaxBytes
 
+const mediaUpstreamResponseReadMaxBytes int64 = 64 << 20
+
 func resolveUpstreamResponseReadLimit(cfg *config.Config) int64 {
 	if cfg != nil && cfg.Gateway.UpstreamResponseReadMaxBytes > 0 {
 		return cfg.Gateway.UpstreamResponseReadMaxBytes
@@ -48,6 +50,11 @@ type TooLargeWriter func(c *gin.Context)
 // 超限时自动记录 ops error 并调用 onTooLarge 向客户端写错误。
 func ReadUpstreamResponseBody(reader io.Reader, cfg *config.Config, c *gin.Context, onTooLarge TooLargeWriter) ([]byte, error) {
 	maxBytes := resolveUpstreamResponseReadLimit(cfg)
+	return ReadUpstreamResponseBodyWithLimit(reader, maxBytes, c, onTooLarge)
+}
+
+// ReadUpstreamResponseBodyWithLimit 为需要更严格边界的媒体接口读取非流式响应。
+func ReadUpstreamResponseBodyWithLimit(reader io.Reader, maxBytes int64, c *gin.Context, onTooLarge TooLargeWriter) ([]byte, error) {
 	body, err := readUpstreamResponseBodyLimited(reader, maxBytes)
 	if err != nil {
 		if errors.Is(err, ErrUpstreamResponseBodyTooLarge) {

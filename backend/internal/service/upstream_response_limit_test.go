@@ -78,3 +78,14 @@ func TestReadUpstreamResponseBody(t *testing.T) {
 		require.False(t, called)
 	})
 }
+
+func TestReadUpstreamResponseBodyWithLimitUsesMediaBoundary(t *testing.T) {
+	called := false
+	body, err := ReadUpstreamResponseBodyWithLimit(bytes.NewReader([]byte("toolong")), 3, nil, func(_ *gin.Context) {
+		called = true
+	})
+
+	require.Nil(t, body)
+	require.ErrorIs(t, err, ErrUpstreamResponseBodyTooLarge)
+	require.True(t, called)
+}

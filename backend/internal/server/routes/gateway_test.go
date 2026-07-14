@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,6 +18,8 @@ import (
 func newGatewayRoutesTestRouter(platform ...string) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
+	cfg := &config.Config{}
+	cfg.Gateway.MaxBodySize = 1 << 20
 
 	groupPlatform := service.PlatformOpenAI
 	if len(platform) > 0 && platform[0] != "" {
@@ -41,7 +44,7 @@ func newGatewayRoutesTestRouter(platform ...string) *gin.Engine {
 		nil,
 		nil,
 		nil,
-		&config.Config{},
+		cfg,
 	)
 
 	return router
@@ -123,6 +126,8 @@ func TestGatewayRoutesGrokImagesAndVideosPathsAreRegistered(t *testing.T) {
 		"/images/edits",
 		"/v1/videos/generations",
 		"/videos/generations",
+		"/v1/videos",
+		"/videos",
 		"/v1/videos/edits",
 		"/videos/edits",
 		"/v1/videos/extensions",
@@ -138,8 +143,10 @@ func TestGatewayRoutesGrokImagesAndVideosPathsAreRegistered(t *testing.T) {
 	}
 
 	for _, path := range []string{
-		"/v1/videos/request-123",
-		"/videos/request-123",
+		"/v1/videos/request-123?provider=grok",
+		"/videos/request-123?provider=grok",
+		"/v1/videos/request-123/content?provider=grok",
+		"/videos/request-123/content?provider=grok",
 	} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		w := httptest.NewRecorder()
@@ -150,7 +157,7 @@ func TestGatewayRoutesGrokImagesAndVideosPathsAreRegistered(t *testing.T) {
 	}
 }
 
-func TestGatewayRoutesNonGrokVideosAreRejectedAtPlatformGate(t *testing.T) {
+func TestGatewayRoutesOpenAIInfersGrokCompatibleVideoEditAndExtension(t *testing.T) {
 	router := newGatewayRoutesTestRouter(service.PlatformOpenAI)
 
 	for _, tc := range []struct {
@@ -158,22 +165,138 @@ func TestGatewayRoutesNonGrokVideosAreRejectedAtPlatformGate(t *testing.T) {
 		path   string
 		body   string
 	}{
-		{http.MethodPost, "/v1/videos/generations", `{"model":"grok-imagine-video-1.5","prompt":"waves"}`},
-		{http.MethodPost, "/videos/generations", `{"model":"grok-imagine-video-1.5","prompt":"waves"}`},
 		{http.MethodPost, "/v1/videos/edits", `{"model":"grok-imagine-video","prompt":"waves","video":{"url":"https://example.com/in.mp4"}}`},
 		{http.MethodPost, "/videos/edits", `{"model":"grok-imagine-video","prompt":"waves","video":{"url":"https://example.com/in.mp4"}}`},
 		{http.MethodPost, "/v1/videos/extensions", `{"model":"grok-imagine-video","prompt":"waves","video":{"url":"https://example.com/in.mp4"}}`},
 		{http.MethodPost, "/videos/extensions", `{"model":"grok-imagine-video","prompt":"waves","video":{"url":"https://example.com/in.mp4"}}`},
-		{http.MethodGet, "/v1/videos/request-123", ""},
-		{http.MethodGet, "/videos/request-123", ""},
 	} {
 		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
 		router.ServeHTTP(w, req)
-		require.Equal(t, http.StatusNotFound, w.Code, "method=%s path=%s", tc.method, tc.path)
-		require.Contains(t, w.Body.String(), "Videos API is not supported for this platform")
+		require.NotEqual(t, http.StatusNotFound, w.Code, "method=%s path=%s should infer the Grok-compatible provider", tc.method, tc.path)
+		require.NotContains(t, w.Body.String(), "Videos API is not supported for this platform")
+	}
+}
+
+func TestGatewayRoutesOpenAIAllowsRegisteredAgnesVideoProvider(t *testing.T) {
+	router := newGatewayRoutesTestRouter(service.PlatformOpenAI)
+
+	for _, path := range []string{
+		"/v1/videos/generations",
+		"/videos/generations",
+		"/v1/videos",
+		"/videos",
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"video-v2","prompt":"waves"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should reach the Agnes provider handler", path)
+		require.NotContains(t, w.Body.String(), "Videos API is not supported for this platform")
+	}
+
+	for _, path := range []string{
+		"/v1/videos/video-123?provider=agnes&model=video-v2",
+		"/videos/video-123?provider=agnes&model=video-v2",
+		"/v1/videos/video-123/content?provider=agnes&model=video-v2",
+		"/videos/video-123/content?provider=agnes&model=video-v2",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should reach the Agnes provider handler", path)
+		require.NotContains(t, w.Body.String(), "Videos API is not supported for this platform")
+	}
+}
+
+func TestGatewayRoutesOpenAIAllowsThirdPartyGrokCompatibleVideoProvider(t *testing.T) {
+	router := newGatewayRoutesTestRouter(service.PlatformOpenAI)
+
+	for _, path := range []string{"/v1/videos/generations", "/videos/generations", "/v1/videos", "/videos"} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"provider":"grok","model":"grok-imagine-video","prompt":"waves"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should reach the third-party Grok-compatible handler", path)
+		require.NotContains(t, w.Body.String(), "Videos API is not supported for this platform")
+	}
+
+	for _, path := range []string{
+		"/v1/videos/request-123?provider=grok&model=grok-imagine-video",
+		"/videos/request-123?provider=grok&model=grok-imagine-video",
+		"/v1/videos/request-123/content?provider=grok&model=grok-imagine-video",
+		"/videos/request-123/content?provider=grok&model=grok-imagine-video",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should reach the third-party Grok-compatible handler", path)
+		require.NotContains(t, w.Body.String(), "Videos API is not supported for this platform")
+	}
+
+	for _, path := range []string{
+		"/v1/videos/edits",
+		"/videos/edits",
+		"/v1/videos/extensions",
+		"/videos/extensions",
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"provider":"grok","model":"grok-imagine-video","video":{"url":"https://example.com/input.mp4"}}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should reach the third-party Grok-compatible handler", path)
+		require.NotContains(t, w.Body.String(), "Videos API is not supported for this platform")
+	}
+}
+
+func TestGatewayVideoStatusAndContentAllowProviderInference(t *testing.T) {
+	for _, platform := range []string{service.PlatformOpenAI, service.PlatformGrok} {
+		router := newGatewayRoutesTestRouter(platform)
+		for _, path := range []string{
+			"/v1/videos/request-123",
+			"/videos/request-123",
+			"/v1/videos/request-123/content",
+			"/videos/request-123/content",
+		} {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			w := httptest.NewRecorder()
+
+			router.ServeHTTP(w, req)
+			require.NotEqual(t, http.StatusBadRequest, w.Code, "platform=%s path=%s", platform, path)
+			require.NotContains(t, w.Body.String(), "provider query parameter is required")
+		}
+	}
+}
+
+func TestVideoGenerationProviderRestoresBodyAndRecognizesAgnesModels(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "explicit provider", body: `{"provider":" Agnes ","model":"agnes-video-v2.0"}`, want: "agnes"},
+		{name: "official model", body: `{"model":"agnes-video-v2.0"}`, want: "agnes"},
+		{name: "short model alias", body: `{"model":"video-v2"}`, want: "agnes"},
+		{name: "grok model", body: `{"model":"grok-imagine-video"}`, want: "grok"},
+		{name: "dynamically discovered video model", body: `{"model":"vendor-video-turbo"}`, want: "grok"},
+		{name: "dynamically discovered sora model", body: `{"model":"vendor-sora-preview"}`, want: "grok"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(tc.body))
+
+			require.Equal(t, tc.want, videoGenerationProvider(c))
+			restored, err := io.ReadAll(c.Request.Body)
+			require.NoError(t, err)
+			require.JSONEq(t, tc.body, string(restored))
+		})
 	}
 }
 

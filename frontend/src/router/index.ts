@@ -219,6 +219,17 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/video-generation',
+    name: 'VideoGeneration',
+    component: () => import('@/views/user/VideoGenerationView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Video Generation',
+      titleKey: 'nav.videoGeneration'
+    }
+  },
+  {
     path: '/usage',
     name: 'Usage',
     component: () => import('@/views/user/UsageView.vue'),
@@ -228,6 +239,18 @@ const routes: RouteRecordRaw[] = [
       title: 'Usage Records',
       titleKey: 'usage.title',
       descriptionKey: 'usage.description'
+    }
+  },
+  {
+    path: '/token-leaderboard',
+    name: 'TokenLeaderboard',
+    component: () => import('@/views/user/TokenLeaderboardView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Token Leaderboard',
+      titleKey: 'tokenLeaderboard.title',
+      descriptionKey: 'tokenLeaderboard.description'
     }
   },
   {
@@ -864,7 +887,8 @@ router.beforeEach(async (to, _from, next) => {
       '/admin/subscriptions',
       '/admin/redeem',
       '/subscriptions',
-      '/redeem'
+      '/redeem',
+      '/video-generation'
     ]
 
     if (restrictedPaths.some((path) => to.path.startsWith(path))) {

@@ -119,6 +119,11 @@ export const FeatureFlags = {
     mode: 'opt-in',
     label: 'Affiliate',
   }),
+  tokenLeaderboard: defineFlag({
+    key: 'token_leaderboard_enabled',
+    mode: 'opt-in',
+    label: 'Token Leaderboard',
+  }),
 } as const
 
 export type RegisteredFeatureFlag = keyof typeof FeatureFlags
