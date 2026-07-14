@@ -193,7 +193,7 @@
           </form>
         </div>
       </main>
-      <GenerationHistoryPanel media-type="image" />
+      <GenerationHistoryPanel media-type="image" @select="restoreImageRecord" />
     </div>
   </AppLayout>
 </template>
@@ -203,6 +203,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
 import GenerationHistoryPanel from '@/components/user/GenerationHistoryPanel.vue'
+import { generationRecordsAPI, type GenerationRecord } from '@/api/generationRecords'
 import { keysAPI } from '@/api'
 import { imageGenerationAPI, type ImageGenerationItem } from '@/api/imageGeneration'
 import type { ApiKey } from '@/types'
@@ -305,6 +306,7 @@ const openResultUrlTimers = new Map<string, number>()
 let modelRequestVersion = 0
 let elapsedTimer: number | null = null
 let generationStartedAt = 0
+let historyResultUrl = ''
 
 const form = reactive({
   model: '',
@@ -593,6 +595,31 @@ async function handleGenerate() {
   }
 }
 
+async function restoreImageRecord(record: GenerationRecord) {
+  if (record.status !== 'completed') return
+  try {
+    let src = record.result?.urls?.[0] || ''
+    let mimeType = 'image/png'
+    const filename = record.result?.files?.[0] || `image-${record.task_id}.png`
+    if (record.result?.files?.length) {
+      const blob = await generationRecordsAPI.content(record.task_id, 0)
+      if (historyResultUrl) URL.revokeObjectURL(historyResultUrl)
+      historyResultUrl = URL.createObjectURL(blob)
+      src = historyResultUrl
+      mimeType = blob.type || mimeType
+    }
+    if (!src) return
+    const dimensions = safeDimensions(form.width, form.height)
+    results.value = [{ src, filename, mimeType, ...dimensions, url: src }]
+    selectedResultIndex.value = 0
+    lastPrompt.value = record.prompt_preview || lastPrompt.value
+    statusMessage.value = '已从生成记录恢复图片'
+    errorMessage.value = ''
+  } catch (error) {
+    appStore.showError(extractApiErrorMessage(error, '恢复生成图片失败'))
+  }
+}
+
 async function downloadResult() {
   const result = selectedResult.value
   if (!result) return
@@ -675,6 +702,7 @@ onBeforeUnmount(() => {
   modelRequestVersion += 1
   stopElapsedTimer()
   if (referencePreview.value) URL.revokeObjectURL(referencePreview.value)
+  if (historyResultUrl) URL.revokeObjectURL(historyResultUrl)
   for (const [url, timer] of openResultUrlTimers) {
     window.clearTimeout(timer)
     URL.revokeObjectURL(url)

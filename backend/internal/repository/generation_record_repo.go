@@ -62,7 +62,7 @@ func (r *generationRecordRepository) Create(ctx context.Context, p service.Creat
 DELETE FROM generation_records
 WHERE id = (
     SELECT id FROM generation_records
-    WHERE user_id=$1 AND status IN ('completed','failed')
+    WHERE user_id=$1
     ORDER BY created_at ASC,id ASC
     LIMIT 1
 )
@@ -93,7 +93,7 @@ RETURNING task_id,user_id,api_key_id,media_type,provider,model,prompt_preview,st
 }
 
 func (r *generationRecordRepository) Complete(ctx context.Context, taskID string, userID, accountID int64, status, upstream string, result json.RawMessage, failure string) error {
-	execResult, err := r.db.ExecContext(ctx, `UPDATE generation_records SET account_id=NULLIF($3,0),status=$4,upstream_task_id=NULLIF($5,''),result_json=$6,error_message=NULLIF($7,''),updated_at=NOW(),finished_at=CASE WHEN $4 IN ('completed','failed') THEN NOW() ELSE finished_at END WHERE task_id=$1 AND user_id=$2`, taskID, userID, accountID, status, upstream, nullableJSON(result), failure)
+	execResult, err := r.db.ExecContext(ctx, `UPDATE generation_records SET account_id=NULLIF($3,0),status=$4::varchar,upstream_task_id=NULLIF($5,''),result_json=$6,error_message=NULLIF($7,''),updated_at=NOW(),finished_at=CASE WHEN $4::varchar IN ('completed','failed') THEN NOW() ELSE finished_at END WHERE task_id=$1 AND user_id=$2`, taskID, userID, accountID, status, upstream, nullableJSON(result), failure)
 	if err != nil {
 		return err
 	}
@@ -109,11 +109,11 @@ func (r *generationRecordRepository) Complete(ctx context.Context, taskID string
 
 func (r *generationRecordRepository) CompleteByUpstream(ctx context.Context, userID, apiKeyID, accountID int64, provider, upstream, status string, result json.RawMessage, failure string) error {
 	execResult, err := r.db.ExecContext(ctx, `UPDATE generation_records SET
-status=CASE WHEN status IN ('completed','failed') THEN status ELSE $6 END,
+status=CASE WHEN status IN ('completed','failed') THEN status ELSE $6::varchar END,
 result_json=CASE WHEN status IN ('completed','failed') THEN result_json ELSE COALESCE($7,result_json) END,
 error_message=CASE WHEN status IN ('completed','failed') THEN error_message ELSE NULLIF($8,'') END,
 updated_at=NOW(),
-finished_at=CASE WHEN status IN ('completed','failed') THEN finished_at WHEN $6 IN ('completed','failed') THEN NOW() ELSE finished_at END
+finished_at=CASE WHEN status IN ('completed','failed') THEN finished_at WHEN $6::varchar IN ('completed','failed') THEN NOW() ELSE finished_at END
 WHERE user_id=$1 AND api_key_id=$2 AND account_id=$3 AND provider=$4 AND upstream_task_id=$5`, userID, apiKeyID, accountID, provider, upstream, status, nullableJSON(result), failure)
 	if err != nil {
 		return err

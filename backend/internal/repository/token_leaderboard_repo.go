@@ -33,18 +33,19 @@ func (r *tokenLeaderboardRepository) ListDaily(
 	var rows *sql.Rows
 	if settled {
 		rows, err = r.db.QueryContext(ctx, `
-SELECT rank, user_id, total_tokens, reward_points
-FROM token_leaderboard_daily
-WHERE settlement_date = $1
-  AND (rank <= 100 OR user_id = $2)
-ORDER BY rank`, date.Format("2006-01-02"), currentUserID)
+SELECT d.rank, d.user_id, d.total_tokens, d.reward_points
+FROM token_leaderboard_daily d
+JOIN users u ON u.id = d.user_id AND u.deleted_at IS NULL AND u.role <> 'admin'
+WHERE d.settlement_date = $1
+  AND (d.rank <= 100 OR d.user_id = $2)
+ORDER BY d.rank`, date.Format("2006-01-02"), currentUserID)
 	} else {
 		rows, err = r.db.QueryContext(ctx, `
 WITH totals AS (
     SELECT ul.user_id,
            SUM(ul.input_tokens + ul.output_tokens + ul.cache_creation_tokens + ul.cache_read_tokens)::bigint AS total_tokens
     FROM usage_logs ul
-    JOIN users u ON u.id = ul.user_id AND u.deleted_at IS NULL
+    JOIN users u ON u.id = ul.user_id AND u.deleted_at IS NULL AND u.role <> 'admin'
     WHERE ul.created_at >= $1 AND ul.created_at < $2
     GROUP BY ul.user_id
 ), ranked AS (
@@ -114,7 +115,7 @@ WITH totals AS (
     SELECT ul.user_id,
            SUM(ul.input_tokens + ul.output_tokens + ul.cache_creation_tokens + ul.cache_read_tokens)::bigint AS total_tokens
     FROM usage_logs ul
-    JOIN users u ON u.id = ul.user_id AND u.deleted_at IS NULL
+    JOIN users u ON u.id = ul.user_id AND u.deleted_at IS NULL AND u.role <> 'admin'
     WHERE ul.created_at >= $2 AND ul.created_at < $3
     GROUP BY ul.user_id
 ), ranked AS (

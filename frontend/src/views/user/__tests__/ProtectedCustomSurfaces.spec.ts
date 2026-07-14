@@ -63,4 +63,10 @@ describe('88token protected custom surfaces', () => {
     expect(sidebar).toContain('affiliate-plan-card')
     expect(router).toContain("path: '/custom/:id'")
   })
+
+  it('shows the numeric user ID on the token leaderboard', () => {
+    const source = readView('TokenLeaderboardView.vue')
+    expect(source).toContain("{ id: entry.user_id }")
+    expect(source).not.toContain("{ id: entry.anonymous_id }")
+  })
 })

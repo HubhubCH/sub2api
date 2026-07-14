@@ -19,21 +19,38 @@
     <div v-if="loading && records.length === 0" class="history-empty">正在加载记录…</div>
     <div v-else-if="records.length === 0" class="history-empty">暂无生成记录</div>
     <div v-else class="history-list">
-      <button
+      <article
         v-for="record in records"
         :key="record.task_id"
-        type="button"
         class="history-item"
-        @click="openRecord(record)"
       >
-        <div class="history-item-top">
-          <strong>{{ record.model || (mediaType === 'image' ? '图片任务' : '视频任务') }}</strong>
-          <span :class="`status-${record.status}`">{{ statusText(record.status) }}</span>
-        </div>
-        <p>{{ record.prompt_preview || '未保存提示词预览' }}</p>
-        <time>{{ formatTime(record.created_at) }}</time>
-        <small v-if="record.error_message">{{ record.error_message }}</small>
-      </button>
+        <button type="button" class="history-item-main" @click="openRecord(record)">
+          <img
+            v-if="mediaType === 'image' && previewUrls[record.task_id]"
+            class="history-preview"
+            :src="previewUrls[record.task_id]"
+            :alt="record.prompt_preview || '生成图片预览'"
+          />
+          <div class="history-item-top">
+            <strong>{{ record.model || (mediaType === 'image' ? '图片任务' : '视频任务') }}</strong>
+            <span :class="`status-${record.status}`">{{ statusText(record.status) }}</span>
+          </div>
+          <p>{{ record.prompt_preview || '未保存提示词预览' }}</p>
+          <time>{{ formatTime(record.created_at) }}</time>
+          <small v-if="record.error_message">{{ record.error_message }}</small>
+        </button>
+        <button
+          v-if="hasDownload(record)"
+          type="button"
+          class="history-download"
+          :disabled="downloadingTaskId === record.task_id"
+          title="下载生成结果"
+          @click="downloadRecord(record)"
+        >
+          <Icon name="download" size="sm" />
+          <span>{{ downloadingTaskId === record.task_id ? '下载中' : '下载' }}</span>
+        </button>
+      </article>
     </div>
   </aside>
 </template>
@@ -47,13 +64,61 @@ const props = defineProps<{ mediaType: 'image' | 'video' }>()
 const emit = defineEmits<{ select: [record: GenerationRecord]; pending: [records: GenerationRecord[]] }>()
 const allRecords = ref<GenerationRecord[]>([])
 const loading = ref(false)
+const previewUrls = ref<Record<string, string>>({})
+const downloadingTaskId = ref('')
+const ownedPreviewUrls = new Set<string>()
 let refreshTimer: number | null = null
+let initialImageSelectionDone = false
 const records = computed(() => allRecords.value.filter((record) => record.media_type === props.mediaType))
+
+function hasDownload(record: GenerationRecord): boolean {
+  return record.status === 'completed' && Boolean(record.result?.files?.length || record.result?.urls?.length)
+}
+
+function releasePreview(url: string) {
+  if (!ownedPreviewUrls.has(url)) return
+  URL.revokeObjectURL(url)
+  ownedPreviewUrls.delete(url)
+}
+
+async function syncImagePreviews(imageRecords: GenerationRecord[]) {
+  const activeTaskIDs = new Set(imageRecords.map((record) => record.task_id))
+  const next = { ...previewUrls.value }
+  for (const [taskID, url] of Object.entries(next)) {
+    if (activeTaskIDs.has(taskID)) continue
+    releasePreview(url)
+    delete next[taskID]
+  }
+  for (const record of imageRecords) {
+    if (next[record.task_id] || !hasDownload(record)) continue
+    try {
+      if (record.result?.files?.length) {
+        const blob = await generationRecordsAPI.content(record.task_id, 0)
+        const url = URL.createObjectURL(blob)
+        ownedPreviewUrls.add(url)
+        next[record.task_id] = url
+      } else if (record.result?.urls?.[0]) {
+        next[record.task_id] = record.result.urls[0]
+      }
+    } catch {
+      // 单个缩略图加载失败不影响其他生成记录。
+    }
+  }
+  previewUrls.value = next
+}
 
 async function loadRecords() {
   loading.value = true
   try {
     allRecords.value = await generationRecordsAPI.list(5)
+    if (props.mediaType === 'image') {
+      await syncImagePreviews(records.value)
+      if (!initialImageSelectionDone) {
+        initialImageSelectionDone = true
+        const latest = records.value.find(hasDownload)
+        if (latest) emit('select', latest)
+      }
+    }
     if (props.mediaType === 'video') emit('pending', records.value.filter((record) => ['running', 'submitted'].includes(record.status)).slice(0, 5))
   }
   catch { allRecords.value = [] }
@@ -61,20 +126,38 @@ async function loadRecords() {
 }
 
 async function openRecord(record: GenerationRecord) {
-	if (props.mediaType === 'video') { emit('select', record); return }
-	if (record.result?.files?.length) {
-		const blob = await generationRecordsAPI.content(record.task_id, 0)
-		const url = URL.createObjectURL(blob)
-		window.open(url, '_blank', 'noopener,noreferrer')
-		window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
-		return
-	}
-	const firstUrl = record.result?.urls?.[0]
-	if (firstUrl) window.open(firstUrl, '_blank', 'noopener,noreferrer')
+  emit('select', record)
+}
+
+function recordFilename(record: GenerationRecord): string {
+  return record.result?.files?.[0] || `${record.media_type}-${record.task_id}`
+}
+
+async function downloadRecord(record: GenerationRecord) {
+  if (!hasDownload(record) || downloadingTaskId.value) return
+  downloadingTaskId.value = record.task_id
+  let objectURL = ''
+  try {
+    if (record.result?.files?.length) {
+      const blob = await generationRecordsAPI.content(record.task_id, 0)
+      objectURL = URL.createObjectURL(blob)
+    }
+    const url = objectURL || record.result?.urls?.[0]
+    if (!url) return
+    const link = document.createElement('a')
+    link.href = url
+    link.download = recordFilename(record)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  } finally {
+    if (objectURL) URL.revokeObjectURL(objectURL)
+    downloadingTaskId.value = ''
+  }
 }
 
 function statusText(status: string) {
-  return ({ running: '生成中', submitted: '处理中', completed: '已完成', failed: '失败' } as Record<string, string>)[status] || status
+  return ({ running: '生成中', queued: '排队中', submitted: '处理中', processing: '生成中', completed: '已完成', failed: '失败' } as Record<string, string>)[status] || status
 }
 function formatTime(value: string) { return new Date(value).toLocaleString('zh-CN', { hour12: false }) }
 
@@ -82,7 +165,11 @@ onMounted(() => {
   void loadRecords()
   refreshTimer = window.setInterval(() => { if (records.value.some((item) => ['running', 'submitted'].includes(item.status))) void loadRecords() }, 5000)
 })
-onBeforeUnmount(() => { if (refreshTimer !== null) window.clearInterval(refreshTimer) })
+onBeforeUnmount(() => {
+  if (refreshTimer !== null) window.clearInterval(refreshTimer)
+  for (const url of ownedPreviewUrls) URL.revokeObjectURL(url)
+  ownedPreviewUrls.clear()
+})
 </script>
 
 <style scoped>
@@ -162,14 +249,11 @@ onBeforeUnmount(() => { if (refreshTimer !== null) window.clearInterval(refreshT
 }
 
 .history-item {
-  display: block;
+  position: relative;
   width: 100%;
-  border: 0;
   border-bottom: 1px solid #edf1f5;
   background: transparent;
-  cursor: pointer;
   padding: 14px 2px;
-  text-align: left;
 }
 
 .history-item:last-child {
@@ -178,6 +262,44 @@ onBeforeUnmount(() => { if (refreshTimer !== null) window.clearInterval(refreshT
 
 .history-item:hover {
   background: #f8fafc;
+}
+
+.history-item-main {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+
+.history-preview {
+  width: 100%;
+  height: 132px;
+  margin-bottom: 10px;
+  border-radius: 10px;
+  object-fit: cover;
+}
+
+.history-download {
+  display: inline-flex;
+  min-height: 34px;
+  margin-top: 10px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #dbe4ee;
+  border-radius: 9px;
+  background: #fff;
+  color: #2563eb;
+  cursor: pointer;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.history-download:disabled {
+  cursor: wait;
+  opacity: 0.55;
 }
 
 .history-item strong {
@@ -189,7 +311,7 @@ onBeforeUnmount(() => { if (refreshTimer !== null) window.clearInterval(refreshT
   white-space: nowrap;
 }
 
-.history-item span {
+.history-item-top > span {
   flex: none;
   border-radius: 999px;
   background: #eef3f7;
@@ -223,7 +345,9 @@ onBeforeUnmount(() => { if (refreshTimer !== null) window.clearInterval(refreshT
 .status-completed { color: #11856f !important; background: #dcfaf4 !important; }
 .status-failed { color: #c33 !important; background: #fff0f0 !important; }
 .status-running,
-.status-submitted { color: #2563eb !important; background: #edf4ff !important; }
+.status-queued,
+.status-submitted,
+.status-processing { color: #2563eb !important; background: #edf4ff !important; }
 
 .history-empty {
   padding: 40px 16px;
@@ -248,6 +372,11 @@ onBeforeUnmount(() => { if (refreshTimer !== null) window.clearInterval(refreshT
 }
 
 :global(.dark) .refresh-button {
+  border-color: #334155;
+  background: #0f172a;
+}
+
+:global(.dark) .history-download {
   border-color: #334155;
   background: #0f172a;
 }

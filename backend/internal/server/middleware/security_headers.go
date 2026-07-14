@@ -47,6 +47,8 @@ var requiredCSPDirectiveValues = []struct {
 	{"style-src", AirwallexDemoStaticDomain},
 	{"style-src", AirwallexDemoCheckoutDomain},
 	{"frame-src", AirwallexDemoCheckoutDomain},
+	{"media-src", "blob:"},
+	{"media-src", "https:"},
 }
 
 // GenerateNonce generates a cryptographically secure random nonce.
@@ -127,8 +129,8 @@ func isAPIRoutePath(c *gin.Context) bool {
 		strings.HasPrefix(path, "/images")
 }
 
-// enhanceCSPPolicy 确保 CSP 策略包含 nonce 支持和支付 SDK 必需域名。
-// 这样旧配置文件没有及时补域名时，前端支付组件仍能正常加载。
+// enhanceCSPPolicy 确保 CSP 策略包含 nonce、支付 SDK 必需域名和视频媒体来源。
+// 这样旧配置文件没有及时更新时，前端支付组件和生成视频仍能正常加载。
 func enhanceCSPPolicy(policy string) string {
 	// Add nonce placeholder to script-src if not present
 	if !strings.Contains(policy, NonceTemplate) && !strings.Contains(policy, "'nonce-") {

@@ -5,6 +5,7 @@ const listKeys = vi.hoisted(() => vi.fn())
 const listImageModels = vi.hoisted(() => vi.fn())
 const generateImage = vi.hoisted(() => vi.fn())
 const editImage = vi.hoisted(() => vi.fn())
+const getGenerationRecordContent = vi.hoisted(() => vi.fn())
 const showError = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api', () => ({
@@ -18,6 +19,12 @@ vi.mock('@/api/imageGeneration', () => ({
     listImageModels,
     generateImage,
     editImage,
+  },
+}))
+
+vi.mock('@/api/generationRecords', () => ({
+  generationRecordsAPI: {
+    content: getGenerationRecordContent,
   },
 }))
 
@@ -63,6 +70,7 @@ describe('BatchImageGuideView generated image presentation', () => {
     listImageModels.mockReset()
     generateImage.mockReset()
     editImage.mockReset()
+    getGenerationRecordContent.mockReset()
     showError.mockReset()
 
     listKeys.mockResolvedValue({
@@ -188,5 +196,32 @@ describe('BatchImageGuideView generated image presentation', () => {
       'noopener,noreferrer',
     )
     expect(open.mock.calls[0]?.[0]).not.toMatch(/^data:/)
+  })
+
+  it('restores a completed server image into the main preview', async () => {
+    getGenerationRecordContent.mockResolvedValue(new Blob(['stored-image'], { type: 'image/png' }))
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:stored-image') })
+    const historyRecord = {
+      task_id: 'gen-image-1', api_key_id: 1, media_type: 'image', provider: 'openai', model: 'gpt-image-2',
+      prompt_preview: '东方城市夜景', status: 'completed', result: { files: ['0.png'], urls: [] }, created_at: '2026-07-14T12:00:00Z',
+    }
+    const wrapper = mount(BatchImageGuideView, {
+      global: {
+        stubs: {
+          AppLayout: { template: '<div><slot /></div>' },
+          Icon: true,
+          GenerationHistoryPanel: {
+            template: '<button class="restore-history" @click="$emit(\'select\', record)">恢复</button>',
+            data: () => ({ record: historyRecord }),
+          },
+        },
+      },
+    })
+    await flushPromises()
+    await wrapper.find('.restore-history').trigger('click')
+    await flushPromises()
+
+    expect(getGenerationRecordContent).toHaveBeenCalledWith('gen-image-1', 0)
+    expect(wrapper.find('.result-stage img').attributes('src')).toBe('blob:stored-image')
   })
 })

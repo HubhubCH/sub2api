@@ -107,7 +107,7 @@ describe('VideoGenerationView polling lifecycle', () => {
     await flushPromises()
 
     expect(wrapper.find('.task-id').text()).toContain('task-new')
-    expect(wrapper.find('.task-badge').text()).toBe('queued')
+    expect(wrapper.find('.task-badge').text()).toBe('排队中')
     expect(wrapper.find('.result-stage').exists()).toBe(false)
 
     vi.advanceTimersByTime(5000)

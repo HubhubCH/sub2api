@@ -72,7 +72,7 @@
           </div>
 
           <div v-if="topThree.length" class="podium-grid">
-            <article v-for="entry in topThree" :key="entry.anonymous_id" class="podium-card" :class="`rank-${entry.rank}`">
+            <article v-for="entry in topThree" :key="entry.user_id" class="podium-card" :class="`rank-${entry.rank}`">
               <span class="podium-rank">#{{ entry.rank }}</span>
               <p>{{ userLabel(entry) }}</p>
               <strong>{{ formatTokens(entry.total_tokens) }}</strong>
@@ -82,7 +82,7 @@
           </div>
 
           <div v-if="remainingEntries.length" class="ranking-list">
-            <div v-for="entry in remainingEntries" :key="entry.anonymous_id" class="ranking-row" :class="{ 'is-me': entry.is_current_user }">
+            <div v-for="entry in remainingEntries" :key="entry.user_id" class="ranking-row" :class="{ 'is-me': entry.is_current_user }">
               <span class="row-rank">{{ entry.rank }}</span>
               <div class="row-user">
                 <strong>{{ userLabel(entry) }}</strong>
@@ -204,8 +204,8 @@ function formatDateTime(value?: string): string {
 
 function userLabel(entry: TokenLeaderboardEntry): string {
   return entry.is_current_user
-    ? t('tokenLeaderboard.me', { id: entry.anonymous_id })
-    : t('tokenLeaderboard.user', { id: entry.anonymous_id })
+    ? t('tokenLeaderboard.me', { id: entry.user_id })
+    : t('tokenLeaderboard.user', { id: entry.user_id })
 }
 
 async function loadData(): Promise<void> {

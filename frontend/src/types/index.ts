@@ -188,6 +188,7 @@ export interface AffiliateTransferResponse {
 
 export interface TokenLeaderboardEntry {
   rank: number
+  user_id: number
   anonymous_id: string
   total_tokens: number
   reward_points: number

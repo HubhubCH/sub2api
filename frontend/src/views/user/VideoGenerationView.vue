@@ -170,7 +170,7 @@
         </div>
 
         <div v-if="requestId || taskStatus || errorMessage" class="task-strip">
-          <span v-if="taskStatus" class="task-badge">{{ taskStatus }}</span>
+          <span v-if="taskStatus" class="task-badge">{{ videoStatusText(taskStatus) }}</span>
           <span v-if="taskProgress !== null">进度 {{ taskProgress }}%</span>
           <span v-if="queuePosition !== null">队列位置 {{ queuePosition }}</span>
           <span v-if="estimatedRemainingSeconds !== null">预计剩余 {{ formatDuration(estimatedRemainingSeconds) }}</span>
@@ -620,6 +620,27 @@ function applyGatewayResponse(data: Record<string, unknown>, fallbackStatus: str
 function isTerminalVideoStatus(status: string): boolean {
   return ['completed', 'success', 'succeeded', 'done', 'failed', 'error', 'cancelled', 'canceled', 'expired']
     .includes(status.trim().toLowerCase())
+}
+
+function videoStatusText(status: string): string {
+  const normalized = status.trim().toLowerCase()
+  return ({
+    queued: '排队中',
+    submitted: '已提交',
+    processing: '生成中',
+    running: '生成中',
+    completed: '已完成',
+    success: '已完成',
+    succeeded: '已完成',
+    done: '已完成',
+    failed: '失败',
+    error: '失败',
+    cancelled: '已取消',
+    canceled: '已取消',
+    expired: '已过期',
+    history_loaded: '已获取结果',
+    unknown: '未知状态',
+  } as Record<string, string>)[normalized] || status
 }
 
 function stopAutoPolling() {

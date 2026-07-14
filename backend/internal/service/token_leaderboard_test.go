@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -40,6 +41,12 @@ func TestTokenLeaderboardAnonymousIDUsesPrivateSalt(t *testing.T) {
 
 	require.Len(t, first, 8)
 	require.NotEqual(t, first, second)
+}
+
+func TestTokenLeaderboardEntryExposesNumericUserID(t *testing.T) {
+	payload, err := json.Marshal(TokenLeaderboardEntry{UserID: 42, AnonymousID: "anonymous"})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"rank":0,"user_id":42,"anonymous_id":"anonymous","total_tokens":0,"reward_points":0,"is_current_user":false}`, string(payload))
 }
 
 func TestParseTokenLeaderboardDateLimitsToThirtyDays(t *testing.T) {

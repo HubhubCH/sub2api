@@ -32,7 +32,7 @@ var (
 
 type TokenLeaderboardEntry struct {
 	Rank          int    `json:"rank"`
-	UserID        int64  `json:"-"`
+	UserID        int64  `json:"user_id"`
 	AnonymousID   string `json:"anonymous_id"`
 	TotalTokens   int64  `json:"total_tokens"`
 	RewardPoints  int    `json:"reward_points"`

@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 	"time"
 
@@ -16,7 +15,7 @@ func TestGenerationRecordCompleteRejectsMissingRecord(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 	repo := NewGenerationRecordRepository(db)
-	mock.ExpectExec("UPDATE generation_records").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("status=\\$4::varchar.*WHEN \\$4::varchar IN").WillReturnResult(sqlmock.NewResult(0, 0))
 
 	err = repo.Complete(context.Background(), "gen_missing", 1, 0, service.GenerationStatusCompleted, "", nil, "")
 
@@ -29,7 +28,7 @@ func TestGenerationRecordCompleteByUpstreamKeepsTerminalStateImmutable(t *testin
 	require.NoError(t, err)
 	defer db.Close()
 	repo := NewGenerationRecordRepository(db)
-	mock.ExpectExec("status=CASE WHEN status IN \\('completed','failed'\\) THEN status ELSE \\$6 END").
+	mock.ExpectExec("status=CASE WHEN status IN \\('completed','failed'\\) THEN status ELSE \\$6::varchar END").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	err = repo.CompleteByUpstream(context.Background(), 1, 2, 3, "grok", "upstream-1", service.GenerationStatusSubmitted, nil, "")
@@ -53,21 +52,28 @@ func TestGenerationRecordTaskExistsChecksCurrentDatabaseState(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestGenerationRecordCreateRejectsSixthRunningTask(t *testing.T) {
+func TestGenerationRecordCreateEvictsOldestRunningTask(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer db.Close()
 	repo := NewGenerationRecordRepository(db)
+	now := time.Now()
 	mock.ExpectBegin()
 	mock.ExpectExec("SELECT pg_advisory_xact_lock").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("DELETE FROM generation_records WHERE user_id").WillReturnRows(sqlmock.NewRows([]string{"task_id"}))
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM generation_records").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
-	mock.ExpectQuery("DELETE FROM generation_records").WillReturnError(sql.ErrNoRows)
-	mock.ExpectRollback()
+	mock.ExpectQuery("WHERE user_id=\\$1\\s+ORDER BY created_at ASC").
+		WillReturnRows(sqlmock.NewRows([]string{"task_id"}).AddRow("gen_running_old"))
+	mock.ExpectQuery("INSERT INTO generation_records").WillReturnRows(sqlmock.NewRows([]string{
+		"task_id", "user_id", "api_key_id", "media_type", "provider", "model", "prompt_preview", "status", "created_at", "updated_at",
+	}).AddRow("gen_new", int64(1), int64(2), "image", "grok", "grok-image", "prompt", service.GenerationStatusRunning, now, now))
+	mock.ExpectCommit()
 
-	_, _, err = repo.Create(context.Background(), generationRecordCreateParams(), time.Now().Add(-72*time.Hour), 5)
+	record, removed, err := repo.Create(context.Background(), generationRecordCreateParams(), now.Add(-72*time.Hour), 5)
 
-	require.ErrorIs(t, err, service.ErrGenerationRecordLimit)
+	require.NoError(t, err)
+	require.Equal(t, "gen_new", record.TaskID)
+	require.Equal(t, []string{"gen_running_old"}, removed)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

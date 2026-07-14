@@ -465,10 +465,6 @@ func (s *AffiliateService) listInvitees(ctx context.Context, inviterID int64) ([
 	if err != nil {
 		return nil, err
 	}
-	for i := range invitees {
-		invitees[i].Email = maskEmail(invitees[i].Email)
-		invitees[i].Username = maskUsername(invitees[i].Username)
-	}
 	return invitees, nil
 }
 
@@ -680,8 +676,6 @@ func (s *AffiliateService) GetInviteeDetail(ctx context.Context, inviterID, invi
 	if err != nil {
 		return nil, err
 	}
-	detail.Email = maskEmail(detail.Email)
-	detail.Username = maskUsername(detail.Username)
 	for i := range detail.RechargeRecords {
 		detail.RechargeRecords[i].Code = maskRedeemCode(detail.RechargeRecords[i].Code)
 	}
