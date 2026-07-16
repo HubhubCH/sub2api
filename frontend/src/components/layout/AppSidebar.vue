@@ -336,21 +336,6 @@ const ImageIcon = {
     )
 }
 
-const VideoIcon = {
-  render: () =>
-    h(
-      'svg',
-      { fill: 'none', viewBox: '0 0 24 24', stroke: 'currentColor', 'stroke-width': '1.5' },
-      [
-        h('path', {
-          'stroke-linecap': 'round',
-          'stroke-linejoin': 'round',
-          d: 'M15.75 10.5 20.47 7.76A.75.75 0 0121.6 8.4v7.2a.75.75 0 01-1.13.64l-4.72-2.74M4.5 6.75h9a2.25 2.25 0 012.25 2.25v6a2.25 2.25 0 01-2.25 2.25h-9A2.25 2.25 0 012.25 15V9A2.25 2.25 0 014.5 6.75z'
-        })
-      ]
-    )
-}
-
 const ChartIcon = {
   render: () =>
     h(
@@ -743,9 +728,8 @@ function buildSelfNavItems(withDashboard: boolean): NavItem[] {
   }
   items.push(
     { path: '/keys', label: t('nav.apiKeys'), icon: KeyIcon },
-    { path: '/batch-image', label: t('nav.batchImage'), icon: ImageIcon, hideInSimpleMode: true },
+    { path: '/online-creator', label: t('nav.onlineCreator'), icon: ImageIcon, hideInSimpleMode: true },
     ...aiImageCustomMenus.map(customMenuToNavItem),
-    { path: '/video-generation', label: t('nav.videoGeneration'), icon: VideoIcon, hideInSimpleMode: true },
     { path: '/usage', label: t('nav.usage'), icon: ChartIcon, hideInSimpleMode: true },
     { path: '/token-leaderboard', label: t('nav.tokenLeaderboard'), icon: ChartIcon, hideInSimpleMode: true, featureFlag: flagTokenLeaderboard },
     { path: '/available-channels', label: t('nav.availableChannels'), icon: ChannelIcon, hideInSimpleMode: true, featureFlag: flagAvailableChannels },

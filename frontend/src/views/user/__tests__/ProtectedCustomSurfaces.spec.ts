@@ -57,14 +57,18 @@ describe('88token protected custom surfaces', () => {
     }
   })
 
-  it('keeps protected navigation while adding the approved media and leaderboard entries', () => {
+  it('keeps protected navigation while consolidating media tools into online creator', () => {
     const sidebar = readSource('../../../components/layout/AppSidebar.vue')
     const router = readSource('../../../router/index.ts')
 
-    for (const path of ['/batch-image', '/video-generation', '/token-leaderboard', '/affiliate']) {
+    for (const path of ['/online-creator', '/token-leaderboard', '/affiliate']) {
       expect(sidebar).toContain(`path: '${path}'`)
+    }
+    for (const path of ['/online-creator', '/batch-image', '/video-generation', '/token-leaderboard', '/affiliate']) {
       expect(router).toContain(`path: '${path}'`)
     }
+    expect(router).toContain("import('@/views/user/BatchImageGuideView.vue')")
+    expect(router).toContain("import('@/views/user/VideoGenerationView.vue')")
     expect(sidebar).toContain('affiliate-plan-card')
     expect(router).toContain("path: '/custom/:id'")
   })

@@ -65,8 +65,9 @@ vi.mock('@/api/generationRecords', () => ({
 
 import OnlineCreatorView from '../OnlineCreatorView.vue'
 
-async function mountReadyView() {
+async function mountReadyView(initialTool?: string) {
   const wrapper = mount(OnlineCreatorView, {
+    props: { initialTool },
     global: {
       stubs: {
         AppLayout: { template: '<div><slot /></div>' },
@@ -152,6 +153,13 @@ describe('OnlineCreatorView', () => {
     expect(keyText).toContain('可用密钥')
     expect(keyText).not.toContain('停用密钥')
     expect(keyText).not.toContain('过期密钥')
+  })
+
+  it('按路由参数初始化对应工具', async () => {
+    const wrapper = await mountReadyView('video')
+
+    expect(wrapper.find('[data-test="creator-tool-video"]').classes()).toContain('active')
+    expect(wrapper.find('[data-test="creator-tool-home"]').classes()).not.toContain('active')
   })
 
   it('提交文本工具请求并展示结果', async () => {

@@ -233,6 +233,10 @@ type CreatorToolId =
   | 'speech'
   | 'history'
 
+const props = withDefaults(defineProps<{ initialTool?: string }>(), {
+  initialTool: 'home',
+})
+
 interface CreatorToolConfig {
   id: CreatorToolId
   label: string
@@ -270,7 +274,11 @@ const tools: CreatorToolConfig[] = [
   { id: 'history', label: '历史记录', badge: '记录', icon: 'clock', action: '查看', placeholder: '' },
 ]
 
-const activeTool = ref<CreatorToolId>('home')
+function normalizeCreatorToolId(toolId?: string): CreatorToolId {
+  return tools.some((tool) => tool.id === toolId) ? toolId as CreatorToolId : 'home'
+}
+
+const activeTool = ref<CreatorToolId>(normalizeCreatorToolId(props.initialTool))
 const apiKeys = ref<ApiKey[]>([])
 const selectedKeyId = ref('')
 const textModels = ref<string[]>([])
@@ -370,7 +378,7 @@ const recentItems = computed<CreatorRecentItem[]>(() => {
 })
 
 function selectTool(toolId: string) {
-  activeTool.value = toolId as CreatorToolId
+  activeTool.value = normalizeCreatorToolId(toolId)
   errorMessage.value = ''
   statusMessage.value = ''
   output.value = null
@@ -827,6 +835,7 @@ function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
 watch(selectedKeyId, () => {
   void loadModelsForSelectedKey()
 })
+watch(() => props.initialTool, (toolId) => selectTool(normalizeCreatorToolId(toolId)))
 watch(activeTool, syncSelectedModel)
 watch(watermarkMode, syncSelectedModel)
 

@@ -206,6 +206,19 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/online-creator',
+    name: 'OnlineCreator',
+    component: () => import('@/views/user/creator/OnlineCreatorView.vue'),
+    props: (route) => ({ initialTool: route.query.tool }),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Online Creator',
+      titleKey: 'onlineCreator.title',
+      descriptionKey: 'onlineCreator.description'
+    }
+  },
+  {
     path: '/batch-image',
     name: 'BatchImageGuide',
     alias: '/docs/batch-image',
@@ -900,6 +913,7 @@ router.beforeEach(async (to, _from, next) => {
       '/admin/redeem',
       '/subscriptions',
       '/redeem',
+      '/online-creator',
       '/video-generation'
     ]
 

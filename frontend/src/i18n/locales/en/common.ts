@@ -150,6 +150,7 @@ export default {
     dashboard: 'Dashboard',
     announcements: 'Announcements',
     apiKeys: 'API Keys',
+    onlineCreator: 'AI Creator',
     batchImage: 'Batch Images',
     videoGeneration: 'Video Generation',
     usage: 'Usage',
@@ -193,6 +194,11 @@ export default {
     channelStatus: 'Channel Status',
     riskControl: 'Risk Control',
     auditLogs: 'Audit Logs',
+  },
+
+  onlineCreator: {
+    title: 'AI Creator',
+    description: 'Create images, videos, copy, and audio from one workspace.',
   },
 
   tokenLeaderboard: {

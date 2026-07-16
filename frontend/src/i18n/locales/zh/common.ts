@@ -150,6 +150,7 @@ export default {
     dashboard: '仪表盘',
     announcements: '公告',
     apiKeys: 'API 密钥',
+    onlineCreator: '在线创作',
     batchImage: 'AI生图',
     videoGeneration: 'AI视频',
     usage: '使用记录',
@@ -193,6 +194,11 @@ export default {
     channelStatus: '渠道状态',
     riskControl: '风控中心',
     auditLogs: '操作日志',
+  },
+
+  onlineCreator: {
+    title: '在线创作',
+    description: '在统一工作台中完成图片、视频、文案和音频创作。',
   },
 
   tokenLeaderboard: {
