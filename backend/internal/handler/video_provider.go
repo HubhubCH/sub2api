@@ -209,6 +209,7 @@ func (h *OpenAIGatewayHandler) handleVideoProviderSubmissionRequest(
 			"",
 			false,
 			false,
+			false,
 			adapter.AccountPlatform(),
 		)
 		if selectErr != nil {
@@ -284,7 +285,7 @@ func (h *OpenAIGatewayHandler) handleVideoProviderSubmissionRequest(
 			}
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(forwardErr, &failoverErr) {
-				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(requestModel), false, nil)
 				if c.Writer.Size() != writerSizeBeforeForward {
 					h.handleFailoverExhausted(c, failoverErr, true)
 					return
@@ -311,7 +312,7 @@ func (h *OpenAIGatewayHandler) handleVideoProviderSubmissionRequest(
 				switchCount++
 				continue
 			}
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(requestModel), false, nil)
 			if c.Writer.Size() == writerSizeBeforeForward {
 				h.errorResponse(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
 			}
@@ -319,7 +320,7 @@ func (h *OpenAIGatewayHandler) handleVideoProviderSubmissionRequest(
 			return
 		}
 
-		h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
+		h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(requestModel), true, nil)
 		upstreamTaskID := ""
 		if result != nil {
 			upstreamTaskID = strings.TrimSpace(result.ResponseID)
@@ -483,14 +484,14 @@ func (h *OpenAIGatewayHandler) handleBoundVideoProviderRequest(
 	service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, responseLatencyMs)
 
 	if forwardErr != nil {
-		h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+		h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(requestModel), false, nil)
 		reqLog.Warn("video_provider.bound_account_forward_failed", zap.Error(forwardErr))
 		if c.Writer.Size() == writerSizeBeforeForward {
 			videoTaskErrorResponse(c, service.ErrVideoTaskBoundAccountUnavailable.WithCause(forwardErr), "")
 		}
 		return
 	}
-	h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
+	h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(requestModel), true, nil)
 	reqLog.Debug("video_provider.bound_request_completed",
 		zap.String("request_id", requestID),
 		zap.Bool("has_result", result != nil),
