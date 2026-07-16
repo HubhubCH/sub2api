@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -100,6 +101,76 @@ func TestGenerationRecordServiceStopWaitsForWorkers(t *testing.T) {
 	}
 	require.NotPanics(t, svc.Stop)
 }
+
+func TestGenerationRecordServiceStartIsIdempotent(t *testing.T) {
+	cleanupCalls := make(chan struct{}, 2)
+	repo := &generationRecordRepoStub{
+		cleanupFunc: func(context.Context, int64, time.Time, int) ([]string, error) {
+			cleanupCalls <- struct{}{}
+			return nil, nil
+		},
+	}
+	svc := NewGenerationRecordService(repo)
+	svc.dataDir = t.TempDir()
+	svc.Start()
+	svc.Start()
+	defer svc.Stop()
+
+	select {
+	case <-cleanupCalls:
+	case <-time.After(time.Second):
+		t.Fatal("Start 未启动清理 worker")
+	}
+	select {
+	case <-cleanupCalls:
+		t.Fatal("重复 Start 启动了第二个清理 worker")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestGenerationRecordServiceDoesNotStartAfterStop(t *testing.T) {
+	cleanupCalls := make(chan struct{}, 1)
+	repo := &generationRecordRepoStub{
+		cleanupFunc: func(context.Context, int64, time.Time, int) ([]string, error) {
+			cleanupCalls <- struct{}{}
+			return nil, nil
+		},
+	}
+	svc := NewGenerationRecordService(repo)
+	svc.dataDir = t.TempDir()
+	svc.Stop()
+	svc.Start()
+
+	select {
+	case <-cleanupCalls:
+		t.Fatal("Stop 后 Start 仍启动了清理 worker")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestGenerationRecordServiceConcurrentStartStop(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		svc := NewGenerationRecordService(&generationRecordRepoStub{})
+		svc.dataDir = t.TempDir()
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			svc.Start()
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			svc.Stop()
+		}()
+		close(start)
+		wg.Wait()
+		svc.Stop()
+	}
+}
+
 func (r *generationRecordRepoStub) ListPendingVideos(context.Context, time.Time, int) ([]*GenerationRecord, error) {
 	return r.pending, nil
 }
