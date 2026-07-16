@@ -50,7 +50,7 @@ export interface CreatorLocalRecord {
   preview: string
   content: string
   outputType: 'text' | 'audio'
-  url?: string
+  blob?: Blob
 }
 
 defineProps<{
@@ -67,23 +67,23 @@ defineEmits<{
 <style scoped>
 .creator-history {
   display: grid;
-  gap: 14px;
+  gap: 12px;
 }
 
 .history-section {
   overflow: hidden;
   border: 1px solid #e2e8f0;
-  border-radius: 18px;
+  border-radius: 8px;
   background: rgba(255, 255, 255, 0.94);
 }
 
 .section-heading {
   display: flex;
-  min-height: 52px;
+  min-height: 44px;
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid #e2e8f0;
-  padding: 10px 16px;
+  padding: 8px 12px;
 }
 
 .section-heading h2 {
@@ -100,7 +100,7 @@ defineEmits<{
 
 .empty-row,
 .history-row {
-  padding: 14px 16px;
+  padding: 11px 12px;
 }
 
 .empty-row {

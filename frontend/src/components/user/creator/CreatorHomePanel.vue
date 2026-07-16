@@ -72,23 +72,23 @@ defineEmits<{
 <style scoped>
 .creator-home {
   display: grid;
-  gap: 14px;
+  gap: 12px;
 }
 
 .home-section {
   overflow: hidden;
   border: 1px solid #e2e8f0;
-  border-radius: 18px;
+  border-radius: 8px;
   background: rgba(255, 255, 255, 0.94);
 }
 
 .section-heading {
   display: flex;
-  min-height: 52px;
+  min-height: 44px;
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid #e2e8f0;
-  padding: 10px 16px;
+  padding: 8px 12px;
 }
 
 .section-heading h2 {
@@ -106,22 +106,22 @@ defineEmits<{
 .tool-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-  padding: 16px;
+  gap: 10px;
+  padding: 12px;
 }
 
 .tool-card {
   display: grid;
-  min-height: 112px;
+  min-height: 94px;
   align-content: center;
   justify-items: start;
   gap: 9px;
   border: 1px solid #edf1f5;
-  border-radius: 14px;
+  border-radius: 6px;
   background: #fff;
   color: #0f766e;
   cursor: pointer;
-  padding: 15px;
+  padding: 12px;
   text-align: left;
 }
 
@@ -143,7 +143,7 @@ defineEmits<{
 
 .empty-row,
 .recent-row {
-  padding: 14px 16px;
+  padding: 11px 12px;
 }
 
 .empty-row {

@@ -91,7 +91,7 @@ describe('onlineCreatorAPI', () => {
     })).rejects.toThrow('余额不足')
   })
 
-  it('筛选音频兼容模型', async () => {
+  it('转写与配音仅启用明确支持 Chat Completions audio 的模型', async () => {
     fetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -101,15 +101,16 @@ describe('onlineCreatorAPI', () => {
           { id: 'tts-1' },
           { id: 'whisper-1' },
           { id: 'realtime-preview' },
+          { id: 'gpt-4o-realtime-preview' },
         ],
       }),
     })
 
-    await expect(onlineCreatorAPI.listAudioModels('sk-audio')).resolves.toEqual([
+    await expect(onlineCreatorAPI.listTranscriptionModels('sk-audio')).resolves.toEqual([
       'gpt-4o-audio-preview',
-      'tts-1',
-      'whisper-1',
-      'realtime-preview',
+    ])
+    await expect(onlineCreatorAPI.listSpeechModels('sk-audio')).resolves.toEqual([
+      'gpt-4o-audio-preview',
     ])
   })
 
