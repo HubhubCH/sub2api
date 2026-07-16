@@ -119,11 +119,12 @@
             {{ t('affiliate.invitees.empty') }}
           </div>
           <div v-else class="affiliate-table-scroll mt-4 overflow-x-auto">
-            <table class="affiliate-invitees-table w-full min-w-[1040px] text-left text-sm">
+            <table class="affiliate-invitees-table w-full min-w-[1160px] text-left text-sm">
               <thead>
                 <tr class="border-b border-gray-200 text-gray-500 dark:border-dark-700 dark:text-dark-400">
                   <th class="px-3 py-2 font-medium">邮箱</th>
                   <th class="px-3 py-2 font-medium">层级</th>
+                  <th v-if="detail.supervisor_view" class="px-3 py-2 font-medium text-right">总计</th>
                   <th class="px-3 py-2 font-medium text-right">消费</th>
                   <th class="px-3 py-2 font-medium text-right">累计充值</th>
                   <th class="px-3 py-2 font-medium text-right">返利明细</th>
@@ -167,8 +168,11 @@
                   </td>
                   <td class="px-3 py-3">
                     <span class="affiliate-level-badge inline-flex items-center px-2.5 py-1 text-xs font-medium">
-                      {{ formatAffiliateLevel(item.level) }}
+                      {{ formatAffiliateLevel(item.agent_level) }}
                     </span>
+                  </td>
+                  <td v-if="detail.supervisor_view" class="px-3 py-3 text-right font-semibold text-primary-600 dark:text-primary-400">
+                    {{ item.level === 1 ? formatCurrency(item.subtree_total_recharged || 0) : '-' }}
                   </td>
                   <td class="px-3 py-3 text-right font-medium text-emerald-600 dark:text-emerald-400">{{ formatCurrency(item.total_consumed || 0) }}</td>
                   <td class="px-3 py-3 text-right font-medium text-emerald-600 dark:text-emerald-400">{{ formatCurrency(item.total_recharged || 0) }}</td>
@@ -395,14 +399,10 @@ function formatCount(value: number): string {
   return value.toLocaleString()
 }
 
-function formatAffiliateLevel(level: number): string {
-  const safeLevel = Number.isFinite(level) && level > 0 ? Math.floor(level) : 1
-  const displayLevel = safeLevel + 1
-  const labels = ['', '一级代理', '二级代理', '三级代理']
-  if (displayLevel < labels.length) {
-    return labels[displayLevel]
-  }
-  return `${displayLevel}级代理`
+function formatAffiliateLevel(agentLevel: number): string {
+  const safeLevel = Number.isFinite(agentLevel) && agentLevel > 0 ? Math.floor(agentLevel) : 1
+  const labels = ['', '一级', '二级', '三级', '四级', '五级', '六级', '七级', '八级', '九级', '十级']
+  return labels[safeLevel] ?? `${safeLevel}级`
 }
 
 function hasInviteeChildren(userId: number): boolean {

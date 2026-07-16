@@ -352,6 +352,8 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		} else {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
 		}
+		c.Set(videoTaskAccountIDContextKey, account.ID)
+		c.Set(videoTaskProviderContextKey, "openai")
 
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)

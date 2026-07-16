@@ -129,3 +129,59 @@ func TestIsValidAffiliateCodeFormat(t *testing.T) {
 		})
 	}
 }
+
+func TestAffiliateAgentLevelForCumulativeRechargeDoesNotReset(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		initialLevel int
+		total        float64
+		level        int
+	}{
+		{initialLevel: 5, total: 0, level: 5},
+		{initialLevel: 5, total: 499.99, level: 5},
+		{initialLevel: 5, total: 500, level: 4},
+		{initialLevel: 5, total: 999.99, level: 4},
+		{initialLevel: 5, total: 1000, level: 3},
+		{initialLevel: 5, total: 1500, level: 2},
+		{initialLevel: 5, total: 2000, level: 1},
+		{initialLevel: 5, total: 2500, level: 1},
+		{initialLevel: 7, total: 0, level: 7},
+		{initialLevel: 7, total: 500, level: 6},
+		{initialLevel: 7, total: 2500, level: 2},
+		{initialLevel: 7, total: 3000, level: 1},
+		{initialLevel: 7, total: 5000, level: 1},
+		{initialLevel: 8, total: 3500, level: 1},
+		{initialLevel: 9, total: 4000, level: 1},
+		{initialLevel: 10, total: 0, level: 10},
+		{initialLevel: 10, total: 500, level: 9},
+		{initialLevel: 10, total: 4499.99, level: 2},
+		{initialLevel: 10, total: 4500, level: 1},
+		{initialLevel: 10, total: 10000, level: 1},
+		{initialLevel: 1, total: 500, level: 1},
+	}
+	for _, tt := range tests {
+		require.Equal(t, tt.level, AffiliateAgentLevelForCumulativeRecharge(tt.initialLevel, tt.total))
+	}
+}
+
+func TestAffiliateInviteeInitialLevel(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, 1, AffiliateInviteeInitialLevel(0, true))
+	require.Equal(t, 1, AffiliateInviteeInitialLevel(7, true))
+	require.Equal(t, 10, AffiliateInviteeInitialLevel(0, false))
+	require.Equal(t, 2, AffiliateInviteeInitialLevel(1, false))
+	require.Equal(t, 8, AffiliateInviteeInitialLevel(7, false))
+	require.Equal(t, 10, AffiliateInviteeInitialLevel(9, false))
+	require.Equal(t, 10, AffiliateInviteeInitialLevel(10, false))
+}
+
+func TestAffiliateSignupBonusRedeemAmount(t *testing.T) {
+	t.Parallel()
+
+	require.True(t, isAffiliateSignupBonusRedeemAmount(2))
+	require.True(t, isAffiliateSignupBonusRedeemAmount(2.000000001))
+	require.False(t, isAffiliateSignupBonusRedeemAmount(1.99))
+	require.False(t, isAffiliateSignupBonusRedeemAmount(2.01))
+}

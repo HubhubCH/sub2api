@@ -204,7 +204,13 @@ func (h *UserHandler) GetAffiliate(c *gin.Context) {
 		return
 	}
 
-	detail, err := h.affiliateService.GetAffiliateDetail(c.Request.Context(), subject.UserID)
+	var detail *service.AffiliateDetail
+	var err error
+	if h.isAffiliateSupervisor(c.Request.Context(), subject.UserID) {
+		detail, err = h.affiliateService.GetAffiliateSupervisorDetail(c.Request.Context(), subject.UserID)
+	} else {
+		detail, err = h.affiliateService.GetAffiliateDetail(c.Request.Context(), subject.UserID)
+	}
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -249,12 +255,28 @@ func (h *UserHandler) GetAffiliateInviteeDetail(c *gin.Context) {
 	}
 	days, _ := strconv.Atoi(c.DefaultQuery("days", "30"))
 
-	detail, err := h.affiliateService.GetInviteeDetail(c.Request.Context(), subject.UserID, inviteeID, days)
+	var detail *service.AffiliateInviteeDetail
+	if h.isAffiliateSupervisor(c.Request.Context(), subject.UserID) {
+		detail, err = h.affiliateService.GetSupervisorInviteeDetail(c.Request.Context(), subject.UserID, inviteeID, days)
+	} else {
+		detail, err = h.affiliateService.GetInviteeDetail(c.Request.Context(), subject.UserID, inviteeID, days)
+	}
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 	response.Success(c, detail)
+}
+
+func (h *UserHandler) isAffiliateSupervisor(ctx context.Context, userID int64) bool {
+	if h == nil || h.userService == nil || userID <= 0 {
+		return false
+	}
+	user, err := h.userService.GetByID(ctx, userID)
+	if err != nil {
+		return false
+	}
+	return user != nil && user.IsAdmin() && strings.EqualFold(strings.TrimSpace(user.Email), service.AffiliateSupervisorEmail)
 }
 
 type StartIdentityBindingRequest struct {

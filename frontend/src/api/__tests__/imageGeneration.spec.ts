@@ -191,6 +191,7 @@ describe('imageGeneration API streaming transport', () => {
     )
 
     const image = new File(['image-bytes'], 'source.png', { type: 'image/png' })
+    const mask = new File(['mask-bytes'], 'mask.png', { type: 'image/png' })
     const result = await editImage({
       apiKey: API_KEY,
       model: 'gpt-image-2',
@@ -200,6 +201,7 @@ describe('imageGeneration API streaming transport', () => {
       count: 1,
       outputFormat: 'webp',
       image,
+      mask,
     })
 
     expect(result.data?.[0]?.b64_json).toBe('ZWRpdGVk')
@@ -211,5 +213,6 @@ describe('imageGeneration API streaming transport', () => {
     expect(body.get('resolution')).toBe('1K')
     expect(body.get('size')).toBeNull()
     expect(body.get('image')).toBe(image)
+    expect(body.get('mask')).toBe(mask)
   })
 })

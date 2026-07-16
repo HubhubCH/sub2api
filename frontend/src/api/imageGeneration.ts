@@ -13,6 +13,7 @@ export interface ImageGenerateRequest {
 
 export interface ImageEditRequest extends ImageGenerateRequest {
   image: File
+  mask?: File
 }
 
 export interface ImageGenerationItem {
@@ -327,6 +328,7 @@ export async function editImage(request: ImageEditRequest): Promise<ImageGenerat
   if (request.background) form.append('background', request.background)
   if (request.outputFormat) form.append('output_format', request.outputFormat)
   form.append('image', request.image)
+  if (request.mask) form.append('mask', request.mask)
 
   return streamImageRequest('/v1/images/edits', request.apiKey, form)
 }

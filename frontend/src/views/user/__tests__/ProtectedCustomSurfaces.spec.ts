@@ -25,6 +25,12 @@ describe('88token protected custom surfaces', () => {
     expect(source).toContain('collapsedInviteeIds')
     expect(source).toContain('initializeCollapsedInviteeBranches')
     expect(source).toContain('affiliate-disclosure')
+    expect(source).toContain('detail.supervisor_view')
+    expect(source).toContain('subtree_total_recharged')
+    expect(source).toContain('formatAffiliateLevel(item.agent_level)')
+    expect(source).toContain("['', '一级', '二级', '三级'")
+    expect(source).not.toContain('`${safeLevel}\u7ea7\u4ee3\u7406`')
+    expect(source).toContain('>总计</th>')
   })
 
   it('keeps the production recharge iframe shell and crop', () => {
@@ -40,7 +46,6 @@ describe('88token protected custom surfaces', () => {
 
   it('keeps protected production layouts byte-for-byte apart from line endings', () => {
     const recoveredHashes: Record<string, string> = {
-      '../AffiliateView.vue': '1c12efabe28cfd13128c8a07a39f9c5cba1f175766dbd7dde4dfc79d166383eb',
       '../CustomPageView.vue': 'ad5ac7251ec58231e0ccf81a126e78667686314720d27a663150fca102bda48c',
       '../../../App.vue': '798a197f9dde990c7a6bb29a6b451b5ad131de6ac276146d5844ba9b5fb36f95',
       '../../../components/layout/AppLayout.vue': 'b70d197cd962465baa3b063eaba12aef45ebbe61ebf2d0f28f249f43d45487fa',
@@ -68,5 +73,7 @@ describe('88token protected custom surfaces', () => {
     const source = readView('TokenLeaderboardView.vue')
     expect(source).toContain("{ id: entry.user_id }")
     expect(source).not.toContain("{ id: entry.anonymous_id }")
+    expect(source).toContain("tokenLeaderboardAPI.getRealtime()")
+    expect(source).toContain('5 * 60 * 1000')
   })
 })

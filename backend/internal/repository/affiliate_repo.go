@@ -82,13 +82,24 @@ func (r *affiliateRepository) BindInviter(ctx context.Context, userID, inviterID
 		if _, err := ensureUserAffiliateWithClient(txCtx, txClient, userID); err != nil {
 			return err
 		}
-		if _, err := ensureUserAffiliateWithClient(txCtx, txClient, inviterID); err != nil {
+		inviter, err := ensureUserAffiliateWithClient(txCtx, txClient, inviterID)
+		if err != nil {
 			return err
 		}
+		inviterIsSupervisor, err := queryAffiliateSupervisorMatch(txCtx, txClient, inviterID)
+		if err != nil {
+			return err
+		}
+		initialLevel := service.AffiliateInviteeInitialLevel(inviter.AgentLevel, inviterIsSupervisor)
 
 		res, err := txClient.ExecContext(txCtx,
-			"UPDATE user_affiliates SET inviter_id = $1, updated_at = NOW() WHERE user_id = $2 AND inviter_id IS NULL",
-			inviterID, userID,
+			`UPDATE user_affiliates
+SET inviter_id = $1,
+    agent_level = $3,
+    agent_initial_level = $3 + FLOOR(agent_cumulative_recharge / $4)::integer,
+    updated_at = NOW()
+WHERE user_id = $2 AND inviter_id IS NULL`,
+			inviterID, userID, initialLevel, service.AffiliateAgentThreshold,
 		)
 		if err != nil {
 			return fmt.Errorf("bind inviter: %w", err)
@@ -341,8 +352,8 @@ VALUES ($1, 'transfer', $2, NULL, $3, $4, $5, $6, NOW(), NOW())`,
 	return transferred, newBalance, nil
 }
 
-func (r *affiliateRepository) ListInvitees(ctx context.Context, inviterID int64, limit int) ([]service.AffiliateInvitee, error) {
-	if limit <= 0 {
+func (r *affiliateRepository) ListInvitees(ctx context.Context, inviterID int64, limit int, includeAllRoots bool) ([]service.AffiliateInvitee, error) {
+	if limit < 0 {
 		limit = 100
 	}
 	client := clientFromContext(ctx, r.client)
@@ -351,26 +362,33 @@ WITH RECURSIVE descendants AS (
     SELECT ua.user_id,
            ua.inviter_id,
            ua.created_at,
-           1 AS level
+           1 AS level,
+           ua.agent_level,
+           ua.agent_cumulative_recharge
     FROM user_affiliates ua
     WHERE ua.inviter_id = $1
+       OR ($3 AND ua.user_id <> $1 AND ua.inviter_id IS NULL)
     UNION ALL
     SELECT child.user_id,
            child.inviter_id,
            child.created_at,
-           descendants.level + 1
+           descendants.level + 1,
+           child.agent_level,
+           child.agent_cumulative_recharge
     FROM user_affiliates child
     JOIN descendants ON child.inviter_id = descendants.user_id
     WHERE descendants.level < 20
 )
 SELECT d.user_id,
-       d.inviter_id,
+       COALESCE(d.inviter_id, 0),
        COALESCE(u.email, ''),
        COALESCE(u.username, ''),
        d.level,
+       d.agent_level,
        d.created_at,
        COALESCE(rebate.total_rebate, 0)::double precision AS total_rebate,
        COALESCE(recharge.total_recharged, 0)::double precision AS total_recharged,
+       d.agent_cumulative_recharge::double precision AS subtree_total_recharged,
        COALESCE(recharge.last_recharged_amount, 0)::double precision AS last_recharged_amount,
        recharge.last_recharged_at,
        COALESCE(usage_stats.total_consumed, 0)::double precision AS total_consumed,
@@ -391,6 +409,7 @@ LEFT JOIN LATERAL (
                      WHERE status = 'used'
                        AND used_by = d.user_id
                        AND value > 0
+                       AND value <> 2
                        AND type IN ('balance', 'admin_balance')
                      ORDER BY used_at DESC
                      LIMIT 1), 0)::double precision AS last_recharged_amount,
@@ -399,6 +418,7 @@ LEFT JOIN LATERAL (
     WHERE status = 'used'
       AND used_by = d.user_id
       AND value > 0
+      AND value <> 2
       AND type IN ('balance', 'admin_balance')
 ) recharge ON TRUE
 LEFT JOIN LATERAL (
@@ -408,7 +428,7 @@ LEFT JOIN LATERAL (
     WHERE user_id = d.user_id
 ) usage_stats ON TRUE
 ORDER BY d.level ASC, d.created_at DESC
-LIMIT $2`, inviterID, limit)
+LIMIT NULLIF($2, 0)`, inviterID, limit, includeAllRoots)
 	if err != nil {
 		return nil, err
 	}
@@ -426,9 +446,11 @@ LIMIT $2`, inviterID, limit)
 			&item.Email,
 			&item.Username,
 			&item.Level,
+			&item.AgentLevel,
 			&createdAt,
 			&item.TotalRebate,
 			&item.TotalRecharged,
+			&item.SubtreeTotalRecharged,
 			&item.LastRechargedAmount,
 			&lastRechargedAt,
 			&item.TotalConsumed,
@@ -451,9 +473,310 @@ LIMIT $2`, inviterID, limit)
 	return invitees, nil
 }
 
-func (r *affiliateRepository) GetInviteeDetail(ctx context.Context, inviterID, inviteeID int64, days int) (*service.AffiliateInviteeDetail, error) {
+type affiliatePromotionCandidate struct {
+	UserID             int64
+	AgentLevel         int
+	InitialLevel       int
+	CumulativeRecharge float64
+}
+
+func (r *affiliateRepository) RecordRechargeAndPromote(ctx context.Context, userID int64, amount float64, sourceType string, sourceID int64) ([]service.AffiliateAgentPromotion, error) {
+	promotions := make([]service.AffiliateAgentPromotion, 0)
+	err := r.withTx(ctx, func(txCtx context.Context, txClient *dbent.Client) error {
+		if _, err := txClient.ExecContext(txCtx, "SELECT pg_advisory_xact_lock(hashtext($1))", "affiliate_agent_promotion"); err != nil {
+			return fmt.Errorf("锁定代理晋级事务: %w", err)
+		}
+		if _, err := ensureUserAffiliateWithClient(txCtx, txClient, userID); err != nil {
+			return fmt.Errorf("初始化充值用户代理资料: %w", err)
+		}
+
+		inserted, err := insertAffiliateRechargeEvent(txCtx, txClient, userID, amount, sourceType, sourceID)
+		if err != nil {
+			return err
+		}
+		if !inserted {
+			return nil
+		}
+
+		adminID, err := queryAffiliateSupervisorID(txCtx, txClient)
+		if err != nil {
+			return err
+		}
+		if _, err := ensureUserAffiliateWithClient(txCtx, txClient, adminID); err != nil {
+			return fmt.Errorf("初始化管理员代理资料: %w", err)
+		}
+		if _, err := txClient.ExecContext(txCtx, `
+UPDATE user_affiliates
+SET agent_level = 1, agent_initial_level = 1, inviter_id = NULL, updated_at = NOW()
+WHERE user_id = $1`, adminID); err != nil {
+			return fmt.Errorf("固定管理员代理根节点: %w", err)
+		}
+
+		candidates, err := addAffiliateRechargeToLineage(txCtx, txClient, userID, amount)
+		if err != nil {
+			return err
+		}
+		for _, candidate := range candidates {
+			if candidate.UserID == adminID {
+				continue
+			}
+			targetLevel := service.AffiliateAgentLevelForCumulativeRecharge(candidate.InitialLevel, candidate.CumulativeRecharge)
+			for {
+				currentLevel, _, oldInviterID, currentTotal, err := queryAffiliateAgentState(txCtx, txClient, candidate.UserID)
+				if err != nil {
+					return err
+				}
+				if currentLevel <= targetLevel || currentLevel <= service.AffiliateAgentLevelOne {
+					break
+				}
+
+				newLevel := currentLevel - 1
+				newInviterID, err := resolvePromotedInviter(txCtx, txClient, candidate.UserID, oldInviterID, newLevel, adminID)
+				if err != nil {
+					return err
+				}
+				result, err := txClient.ExecContext(txCtx, `
+UPDATE user_affiliates
+SET agent_level = $2, inviter_id = $3, updated_at = NOW()
+WHERE user_id = $1 AND agent_level = $4`, candidate.UserID, newLevel, nullableInt64Arg(newInviterID), currentLevel)
+				if err != nil {
+					return fmt.Errorf("更新代理等级: %w", err)
+				}
+				affected, err := result.RowsAffected()
+				if err != nil {
+					return fmt.Errorf("读取代理晋级结果: %w", err)
+				}
+				if affected == 0 {
+					continue
+				}
+				if !nullableInt64Equal(oldInviterID, newInviterID) {
+					if oldInviterID != nil {
+						if _, err := txClient.ExecContext(txCtx, `
+UPDATE user_affiliates
+SET aff_count = GREATEST(aff_count - 1, 0), updated_at = NOW()
+WHERE user_id = $1`, *oldInviterID); err != nil {
+							return fmt.Errorf("更新旧上游邀请人数: %w", err)
+						}
+					}
+					if newInviterID != nil {
+						if _, err := txClient.ExecContext(txCtx, `
+UPDATE user_affiliates
+SET aff_count = aff_count + 1, updated_at = NOW()
+WHERE user_id = $1`, *newInviterID); err != nil {
+							return fmt.Errorf("更新新上游邀请人数: %w", err)
+						}
+					}
+				}
+				if _, err := txClient.ExecContext(txCtx, `
+INSERT INTO user_affiliate_promotion_logs (
+    user_id, from_level, to_level, old_inviter_id, new_inviter_id,
+    cumulative_recharge, source_type, source_id, created_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
+					candidate.UserID, currentLevel, newLevel, nullableInt64Arg(oldInviterID), nullableInt64Arg(newInviterID),
+					currentTotal, sourceType, sourceID,
+				); err != nil {
+					return fmt.Errorf("记录代理晋级日志: %w", err)
+				}
+				promotions = append(promotions, service.AffiliateAgentPromotion{
+					UserID:             candidate.UserID,
+					FromLevel:          currentLevel,
+					ToLevel:            newLevel,
+					OldInviterID:       cloneNullableInt64(oldInviterID),
+					NewInviterID:       cloneNullableInt64(newInviterID),
+					CumulativeRecharge: currentTotal,
+				})
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return promotions, nil
+}
+
+func insertAffiliateRechargeEvent(ctx context.Context, client affiliateQueryExecer, userID int64, amount float64, sourceType string, sourceID int64) (bool, error) {
+	rows, err := client.QueryContext(ctx, `
+INSERT INTO user_affiliate_recharge_events (source_type, source_id, user_id, amount, created_at)
+VALUES ($1, $2, $3, $4, NOW())
+ON CONFLICT (source_type, source_id) DO NOTHING
+RETURNING id`, sourceType, sourceID, userID, amount)
+	if err != nil {
+		return false, fmt.Errorf("记录代理累充事件: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		return false, rows.Err()
+	}
+	var eventID int64
+	if err := rows.Scan(&eventID); err != nil {
+		return false, err
+	}
+	return true, rows.Err()
+}
+
+func queryAffiliateSupervisorID(ctx context.Context, client affiliateQueryExecer) (int64, error) {
+	rows, err := client.QueryContext(ctx, `
+SELECT id
+FROM users
+WHERE LOWER(email) = LOWER($1)
+  AND role = 'admin'
+  AND deleted_at IS NULL
+LIMIT 1`, service.AffiliateSupervisorEmail)
+	if err != nil {
+		return 0, fmt.Errorf("查询代理管理员账号: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return 0, err
+		}
+		return 0, fmt.Errorf("代理管理员账号不存在或角色不是管理员")
+	}
+	var adminID int64
+	if err := rows.Scan(&adminID); err != nil {
+		return 0, err
+	}
+	return adminID, rows.Err()
+}
+
+func queryAffiliateSupervisorMatch(ctx context.Context, client affiliateQueryExecer, userID int64) (bool, error) {
+	rows, err := client.QueryContext(ctx, `
+SELECT EXISTS (
+    SELECT 1
+    FROM users
+    WHERE id = $1
+      AND LOWER(email) = LOWER($2)
+      AND role = 'admin'
+      AND deleted_at IS NULL
+)`, userID, service.AffiliateSupervisorEmail)
+	if err != nil {
+		return false, fmt.Errorf("校验代理管理员账号: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		return false, rows.Err()
+	}
+	var matched bool
+	if err := rows.Scan(&matched); err != nil {
+		return false, err
+	}
+	return matched, rows.Err()
+}
+
+func addAffiliateRechargeToLineage(ctx context.Context, client affiliateQueryExecer, userID int64, amount float64) ([]affiliatePromotionCandidate, error) {
+	rows, err := client.QueryContext(ctx, `
+WITH RECURSIVE lineage AS (
+    SELECT user_id, inviter_id, 0 AS depth
+    FROM user_affiliates
+    WHERE user_id = $1
+    UNION ALL
+    SELECT parent.user_id, parent.inviter_id, lineage.depth + 1
+    FROM user_affiliates parent
+    JOIN lineage ON parent.user_id = lineage.inviter_id
+    WHERE lineage.depth < 20
+), updated AS (
+    UPDATE user_affiliates ua
+    SET agent_cumulative_recharge = ua.agent_cumulative_recharge + $2,
+        updated_at = NOW()
+    FROM lineage
+    WHERE ua.user_id = lineage.user_id
+    RETURNING ua.user_id, ua.agent_level, ua.agent_initial_level, ua.agent_cumulative_recharge::double precision
+)
+SELECT updated.user_id, updated.agent_level, updated.agent_initial_level, updated.agent_cumulative_recharge
+FROM updated
+JOIN lineage ON lineage.user_id = updated.user_id
+ORDER BY lineage.depth ASC`, userID, amount)
+	if err != nil {
+		return nil, fmt.Errorf("累计本人及上游代理充值金额: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	candidates := make([]affiliatePromotionCandidate, 0)
+	for rows.Next() {
+		var item affiliatePromotionCandidate
+		if err := rows.Scan(&item.UserID, &item.AgentLevel, &item.InitialLevel, &item.CumulativeRecharge); err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, item)
+	}
+	return candidates, rows.Err()
+}
+
+func queryAffiliateAgentState(ctx context.Context, client affiliateQueryExecer, userID int64) (int, int, *int64, float64, error) {
+	rows, err := client.QueryContext(ctx, `
+SELECT agent_level, agent_initial_level, inviter_id, agent_cumulative_recharge::double precision
+FROM user_affiliates
+WHERE user_id = $1
+FOR UPDATE`, userID)
+	if err != nil {
+		return 0, 0, nil, 0, fmt.Errorf("查询代理晋级状态: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return 0, 0, nil, 0, err
+		}
+		return 0, 0, nil, 0, service.ErrAffiliateProfileNotFound
+	}
+	var level int
+	var initialLevel int
+	var inviterID sql.NullInt64
+	var total float64
+	if err := rows.Scan(&level, &initialLevel, &inviterID, &total); err != nil {
+		return 0, 0, nil, 0, err
+	}
+	return level, initialLevel, nullableInt64Pointer(inviterID), total, rows.Err()
+}
+
+func resolvePromotedInviter(ctx context.Context, client affiliateQueryExecer, userID int64, oldInviterID *int64, newLevel int, adminID int64) (*int64, error) {
+	if newLevel <= service.AffiliateAgentLevelOne {
+		return int64Pointer(adminID), nil
+	}
+	if oldInviterID == nil {
+		return nil, nil
+	}
+	if *oldInviterID == adminID {
+		return int64Pointer(adminID), nil
+	}
+	_, _, grandparentID, _, err := queryAffiliateAgentState(ctx, client, *oldInviterID)
+	if err != nil && !errors.Is(err, service.ErrAffiliateProfileNotFound) {
+		return nil, err
+	}
+	if grandparentID == nil || *grandparentID == userID {
+		return int64Pointer(adminID), nil
+	}
+	return int64Pointer(*grandparentID), nil
+}
+
+func nullableInt64Pointer(value sql.NullInt64) *int64 {
+	if !value.Valid {
+		return nil
+	}
+	return int64Pointer(value.Int64)
+}
+
+func int64Pointer(value int64) *int64 {
+	copyValue := value
+	return &copyValue
+}
+
+func cloneNullableInt64(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	return int64Pointer(*value)
+}
+
+func nullableInt64Equal(left, right *int64) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func (r *affiliateRepository) GetInviteeDetail(ctx context.Context, inviterID, inviteeID int64, days int, includeAllRoots bool) (*service.AffiliateInviteeDetail, error) {
 	client := clientFromContext(ctx, r.client)
-	detail, err := queryAffiliateInviteeBase(ctx, client, inviterID, inviteeID)
+	detail, err := queryAffiliateInviteeBase(ctx, client, inviterID, inviteeID, includeAllRoots)
 	if err != nil {
 		return nil, err
 	}
@@ -474,12 +797,13 @@ func (r *affiliateRepository) GetInviteeDetail(ctx context.Context, inviterID, i
 	return detail, nil
 }
 
-func queryAffiliateInviteeBase(ctx context.Context, client affiliateQueryExecer, inviterID, inviteeID int64) (*service.AffiliateInviteeDetail, error) {
+func queryAffiliateInviteeBase(ctx context.Context, client affiliateQueryExecer, inviterID, inviteeID int64, includeAllRoots bool) (*service.AffiliateInviteeDetail, error) {
 	rows, err := client.QueryContext(ctx, `
 WITH RECURSIVE descendants AS (
     SELECT user_id, inviter_id, 1 AS depth
     FROM user_affiliates
     WHERE inviter_id = $1
+       OR ($3 AND user_id <> $1 AND inviter_id IS NULL)
     UNION ALL
     SELECT child.user_id, child.inviter_id, descendants.depth + 1
     FROM user_affiliates child
@@ -492,7 +816,7 @@ SELECT d.user_id,
 FROM descendants d
 JOIN users u ON u.id = d.user_id
 WHERE d.user_id = $2
-LIMIT 1`, inviterID, inviteeID)
+LIMIT 1`, inviterID, inviteeID, includeAllRoots)
 	if err != nil {
 		return nil, err
 	}
@@ -536,7 +860,10 @@ ORDER BY used_at DESC`, inviteeID)
 		if err := rows.Scan(&item.Code, &item.Value, &item.Type, &item.UsedAt); err != nil {
 			return nil, 0, err
 		}
-		total += item.Value
+		// 2 元注册赠送记录保留在审计明细中，但不计入累充。
+		if item.Value != 2 {
+			total += item.Value
+		}
 		records = append(records, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -994,6 +1321,8 @@ SELECT user_id,
        aff_quota::double precision,
        aff_frozen_quota::double precision,
        aff_history_quota::double precision,
+       agent_level,
+       agent_cumulative_recharge::double precision,
        created_at,
        updated_at
 FROM user_affiliates
@@ -1022,6 +1351,8 @@ WHERE user_id = $1`, userID)
 		&out.AffQuota,
 		&out.AffFrozenQuota,
 		&out.AffHistoryQuota,
+		&out.AgentLevel,
+		&out.AgentCumulativeRecharge,
 		&out.CreatedAt,
 		&out.UpdatedAt,
 	); err != nil {
@@ -1048,6 +1379,8 @@ SELECT user_id,
        aff_quota::double precision,
        aff_frozen_quota::double precision,
        aff_history_quota::double precision,
+       agent_level,
+       agent_cumulative_recharge::double precision,
        created_at,
        updated_at
 FROM user_affiliates
@@ -1078,6 +1411,8 @@ LIMIT 1`, strings.ToUpper(strings.TrimSpace(code)))
 		&out.AffQuota,
 		&out.AffFrozenQuota,
 		&out.AffHistoryQuota,
+		&out.AgentLevel,
+		&out.AgentCumulativeRecharge,
 		&out.CreatedAt,
 		&out.UpdatedAt,
 	); err != nil {

@@ -50,6 +50,7 @@ type TokenPointWallet struct {
 type TokenLeaderboardData struct {
 	Date             string                  `json:"date"`
 	Timezone         string                  `json:"timezone"`
+	Realtime         bool                    `json:"realtime"`
 	Settled          bool                    `json:"settled"`
 	SettledAt        *time.Time              `json:"settled_at,omitempty"`
 	NextSettlementAt time.Time               `json:"next_settlement_at"`
@@ -148,7 +149,27 @@ func (s *TokenLeaderboardService) Get(ctx context.Context, userID int64, dateTex
 	if err := s.settleYesterdayIfDue(ctx, now); err != nil {
 		logger.LegacyPrintf("service.token_leaderboard", "排行榜补偿结算失败: %v", err)
 	}
+	return s.getForDate(ctx, userID, date, now, false)
+}
 
+// GetRealtime 返回上海时区当天的实时排名，仅供展示，不触发结算或积分发放。
+func (s *TokenLeaderboardService) GetRealtime(ctx context.Context, userID int64) (*TokenLeaderboardData, error) {
+	if s != nil && !s.enabled {
+		return nil, ErrTokenLeaderboardDisabled
+	}
+	if s == nil || s.repo == nil {
+		return nil, infraerrors.ServiceUnavailable("SERVICE_UNAVAILABLE", "排行榜服务不可用")
+	}
+
+	now := s.now().In(tokenLeaderboardLocation())
+	if err := s.settleYesterdayIfDue(ctx, now); err != nil {
+		logger.LegacyPrintf("service.token_leaderboard", "排行榜补偿结算失败: %v", err)
+	}
+	date := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, tokenLeaderboardLocation())
+	return s.getForDate(ctx, userID, date, now, true)
+}
+
+func (s *TokenLeaderboardService) getForDate(ctx context.Context, userID int64, date, now time.Time, realtime bool) (*TokenLeaderboardData, error) {
 	start := date.In(tokenLeaderboardLocation()).UTC()
 	end := date.AddDate(0, 0, 1).In(tokenLeaderboardLocation()).UTC()
 	entries, settled, settledAt, points, err := s.repo.ListDaily(ctx, date, start, end, userID)
@@ -171,6 +192,7 @@ func (s *TokenLeaderboardService) Get(ctx context.Context, userID int64, dateTex
 	return &TokenLeaderboardData{
 		Date:             date.Format("2006-01-02"),
 		Timezone:         TokenLeaderboardTimezone,
+		Realtime:         realtime,
 		Settled:          settled,
 		SettledAt:        settledAt,
 		NextSettlementAt: nextTokenLeaderboardSettlement(now),

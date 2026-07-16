@@ -407,7 +407,7 @@ func (r *oauthEmailAffiliateRepoStub) TransferQuotaToBalance(context.Context, in
 	panic("unexpected TransferQuotaToBalance call")
 }
 
-func (r *oauthEmailAffiliateRepoStub) ListInvitees(context.Context, int64, int) ([]service.AffiliateInvitee, error) {
+func (r *oauthEmailAffiliateRepoStub) ListInvitees(context.Context, int64, int, bool) ([]service.AffiliateInvitee, error) {
 	panic("unexpected ListInvitees call")
 }
 
@@ -447,8 +447,12 @@ func (r *oauthEmailAffiliateRepoStub) GetAffiliateUserOverview(context.Context, 
 	panic("unexpected GetAffiliateUserOverview call")
 }
 
-func (r *oauthEmailAffiliateRepoStub) GetInviteeDetail(context.Context, int64, int64, int) (*service.AffiliateInviteeDetail, error) {
+func (r *oauthEmailAffiliateRepoStub) GetInviteeDetail(context.Context, int64, int64, int, bool) (*service.AffiliateInviteeDetail, error) {
 	panic("unexpected GetInviteeDetail call")
+}
+
+func (r *oauthEmailAffiliateRepoStub) RecordRechargeAndPromote(context.Context, int64, float64, string, int64) ([]service.AffiliateAgentPromotion, error) {
+	panic("unexpected RecordRechargeAndPromote call")
 }
 
 func findSetCookieValue(cookies []*http.Cookie, name string) string {

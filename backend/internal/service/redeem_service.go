@@ -32,9 +32,8 @@ const (
 
 type ctxKeySkipRedeemAffiliate struct{}
 
-// ContextSkipRedeemAffiliate returns a context that suppresses the redeem-level
-// affiliate rebate. Used by payment fulfillment which handles rebate separately
-// via applyAffiliateRebateForOrder (with audit-log deduplication).
+// ContextSkipRedeemAffiliate 仅抑制兑换码层的返利入账。
+// 第三方支付的返利按订单处理，但代理累充仍以实际兑换记录为准。
 func ContextSkipRedeemAffiliate(ctx context.Context) context.Context {
 	return context.WithValue(ctx, ctxKeySkipRedeemAffiliate{}, true)
 }
@@ -64,7 +63,7 @@ type RedeemCodeRepository interface {
 	// ListByUserPaginated returns paginated balance/concurrency history for a specific user.
 	// codeType filter is optional - pass empty string to return all types.
 	ListByUserPaginated(ctx context.Context, userID int64, params pagination.PaginationParams, codeType string) ([]RedeemCode, *pagination.PaginationResult, error)
-	// SumPositiveBalanceByUser returns the total recharged amount (sum of positive balance values) for a user.
+	// SumPositiveBalanceByUser 返回用户累计充值，排除注册额外赠送的 2 元兑换记录。
 	SumPositiveBalanceByUser(ctx context.Context, userID int64) (float64, error)
 }
 
@@ -519,6 +518,7 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
 	// 余额类正数兑换码触发邀请返利（best-effort，失败不影响兑换结果）
 	if redeemCode.Type == RedeemTypeBalance && redeemCode.Value > 0 {
 		s.tryAccrueAffiliateRebateForRedeem(ctx, userID, redeemCode.Value)
+		s.tryProcessAgentPromotionForRedeem(ctx, userID, redeemCode)
 	}
 
 	// 重新获取更新后的兑换码
@@ -571,7 +571,7 @@ func (s *RedeemService) invalidateRedeemCaches(ctx context.Context, userID int64
 }
 
 func (s *RedeemService) tryAccrueAffiliateRebateForRedeem(ctx context.Context, userID int64, amount float64) {
-	if ctx.Value(ctxKeySkipRedeemAffiliate{}) != nil {
+	if ctx.Value(ctxKeySkipRedeemAffiliate{}) != nil || isAffiliateSignupBonusRedeemAmount(amount) {
 		return
 	}
 	if s.affiliateService == nil {
@@ -587,6 +587,26 @@ func (s *RedeemService) tryAccrueAffiliateRebateForRedeem(ctx context.Context, u
 	}
 	if rebate > 0 {
 		logger.LegacyPrintf("service.redeem", "[Redeem] affiliate rebate accrued %.8f for inviter of user %d", rebate, userID)
+	}
+}
+
+func (s *RedeemService) tryProcessAgentPromotionForRedeem(ctx context.Context, userID int64, redeemCode *RedeemCode) {
+	if s.affiliateService == nil || redeemCode == nil || isAffiliateSignupBonusRedeemAmount(redeemCode.Value) {
+		return
+	}
+	promotions, err := s.affiliateService.ProcessAgentRecharge(
+		ctx,
+		userID,
+		redeemCode.Value,
+		AffiliateRechargeSourceRedeemCode,
+		redeemCode.ID,
+	)
+	if err != nil {
+		logger.LegacyPrintf("service.redeem", "[Redeem] 代理累充晋级失败 user_id=%d redeem_id=%d: %v", userID, redeemCode.ID, err)
+		return
+	}
+	if len(promotions) > 0 {
+		logger.LegacyPrintf("service.redeem", "[Redeem] 代理晋级成功 user_id=%d promotions=%d", userID, len(promotions))
 	}
 }
 

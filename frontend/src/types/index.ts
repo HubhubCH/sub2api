@@ -133,9 +133,11 @@ export interface AffiliateInvitee {
   email: string
   username: string
   level: number
+  agent_level: number
   created_at?: string
   total_rebate: number
   total_recharged: number
+  subtree_total_recharged: number
   last_recharged_amount: number
   last_recharged_at?: string | null
   total_consumed: number
@@ -152,6 +154,7 @@ export interface UserAffiliateDetail {
   aff_history_quota: number
   /** 当前用户作为邀请人时实际生效的返利比例（专属覆盖全局）。0-100。 */
   effective_rebate_rate_percent: number
+  supervisor_view: boolean
   invitees: AffiliateInvitee[]
 }
 
@@ -206,6 +209,7 @@ export interface TokenPointWallet {
 export interface TokenLeaderboardData {
   date: string
   timezone: string
+  realtime: boolean
   settled: boolean
   settled_at?: string
   next_settlement_at: string

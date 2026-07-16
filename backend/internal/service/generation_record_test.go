@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -70,6 +72,15 @@ func (p *generationVideoPollerStub) PollVideoStatus(context.Context, *Generation
 	return p.payload, nil
 }
 
+type generationAccountRepoStub struct {
+	AccountRepository
+	account *Account
+}
+
+func (r *generationAccountRepoStub) GetByID(context.Context, int64) (*Account, error) {
+	return r.account, nil
+}
+
 func TestGenerationRecordServicePersistsCompletedSSEImage(t *testing.T) {
 	repo := &generationRecordRepoStub{}
 	svc := NewGenerationRecordService(repo)
@@ -86,6 +97,79 @@ func TestGenerationRecordServicePersistsCompletedSSEImage(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []byte("image"), data)
 	require.Equal(t, filepath.Join(svc.dataDir, "gen_test", "0.png"), path)
+}
+
+func TestGenerationRecordServicePassesSelectedAccountToRemoteImageDownload(t *testing.T) {
+	repo := &generationRecordRepoStub{}
+	svc := NewGenerationRecordService(repo)
+	svc.dataDir = t.TempDir()
+	var downloadedWithAccountID int64
+	svc.download = func(_ context.Context, accountID int64, _ string, dir string, index int) (string, error) {
+		downloadedWithAccountID = accountID
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		name := "0.png"
+		require.Equal(t, 0, index)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("image"), 0o640))
+		return name, nil
+	}
+	_, err := svc.Create(context.Background(), CreateGenerationRecordParams{TaskID: "gen_remote", UserID: 1, APIKeyID: 2, MediaType: "image"})
+	require.NoError(t, err)
+
+	err = svc.Finish(context.Background(), "gen_remote", 1, 42, GenerationStatusCompleted, "", []byte(`{"data":[{"url":"https://cdn.example/image.png"}]}`), "")
+
+	require.NoError(t, err)
+	require.Equal(t, int64(42), downloadedWithAccountID)
+	require.Contains(t, string(repo.record.Result), `"files":["0.png"]`)
+}
+
+func TestAccountGenerationMediaDownloaderUsesAccountProxyWithoutLeakingAuthorization(t *testing.T) {
+	proxy := &Proxy{Protocol: "http", Host: "proxy.example", Port: 8080, Username: "user", Password: "secret"}
+	downloader := &accountGenerationMediaDownloader{
+		accountRepo: &generationAccountRepoStub{account: &Account{
+			ID: 42, Platform: PlatformGrok, Type: AccountTypeOAuth, ProxyID: func() *int64 { value := int64(7); return &value }(), Proxy: proxy,
+		}},
+	}
+	var gotOptions generationMediaDownloadOptions
+	downloader.download = func(_ context.Context, _ string, _ string, _ int, options generationMediaDownloadOptions) (string, error) {
+		gotOptions = options
+		return "0.png", nil
+	}
+
+	name, err := downloader.Download(context.Background(), 42, "https://cdn.example/image.png", t.TempDir(), 0)
+
+	require.NoError(t, err)
+	require.Equal(t, "0.png", name)
+	require.Equal(t, proxy.URL(), gotOptions.proxyURL)
+	require.Equal(t, grokUpstreamUserAgent, gotOptions.headers.Get("User-Agent"))
+	require.Empty(t, gotOptions.headers.Get("Authorization"))
+}
+
+func TestDownloadGenerationMediaWithOptionsUsesConfiguredProxy(t *testing.T) {
+	var gotHost string
+	var gotAuthorization string
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		gotAuthorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("proxied-image"))
+	}))
+	defer proxyServer.Close()
+	dir := t.TempDir()
+
+	name, err := downloadGenerationMediaWithOptions(context.Background(), "http://1.1.1.1/image.png", dir, 0, generationMediaDownloadOptions{
+		proxyURL: proxyServer.URL,
+		headers:  http.Header{"User-Agent": []string{grokUpstreamUserAgent}},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "1.1.1.1", gotHost)
+	require.Empty(t, gotAuthorization)
+	require.Equal(t, "0.png", name)
+	require.Equal(t, []byte("proxied-image"), mustReadGenerationFile(t, filepath.Join(dir, name)))
+}
+
+func TestValidateGenerationMediaResolvedHostRejectsPrivateIP(t *testing.T) {
+	require.ErrorContains(t, validateGenerationMediaResolvedHost(context.Background(), "127.0.0.1"), "私有网络")
 }
 
 func TestGenerationRecordServiceKeepsFiveItemsForThreeDays(t *testing.T) {
@@ -166,7 +250,7 @@ func TestGenerationRecordServiceConvergesVideoWithoutBrowserPolling(t *testing.T
 	repo := &generationRecordRepoStub{record: record, pending: []*GenerationRecord{record}}
 	svc := NewGenerationRecordService(repo)
 	svc.dataDir = t.TempDir()
-	svc.download = func(_ context.Context, _ string, dir string, index int) (string, error) {
+	svc.download = func(_ context.Context, _ int64, _ string, dir string, index int) (string, error) {
 		require.NoError(t, os.MkdirAll(dir, 0o750))
 		name := "0.mp4"
 		require.Equal(t, 0, index)
@@ -193,7 +277,7 @@ func TestGenerationRecordServiceRetriesCompletedVideoWhenServerSaveFails(t *test
 	repo := &generationRecordRepoStub{record: record}
 	svc := NewGenerationRecordService(repo)
 	svc.dataDir = t.TempDir()
-	svc.download = func(context.Context, string, string, int) (string, error) {
+	svc.download = func(context.Context, int64, string, string, int) (string, error) {
 		return "", errors.New("临时下载失败")
 	}
 
@@ -213,7 +297,7 @@ func TestGenerationRecordServiceDoesNotRegressCompletedVideo(t *testing.T) {
 	repo := &generationRecordRepoStub{record: record}
 	svc := NewGenerationRecordService(repo)
 	downloadCalled := false
-	svc.download = func(context.Context, string, string, int) (string, error) {
+	svc.download = func(context.Context, int64, string, string, int) (string, error) {
 		downloadCalled = true
 		return "", nil
 	}
@@ -234,7 +318,7 @@ func TestGenerationRecordServiceRemovesVideoFilesWhenDatabaseUpdateFails(t *test
 	repo := &generationRecordRepoStub{record: record, completeByUpstreamErr: errors.New("数据库更新失败")}
 	svc := NewGenerationRecordService(repo)
 	svc.dataDir = t.TempDir()
-	svc.download = func(_ context.Context, _ string, dir string, _ int) (string, error) {
+	svc.download = func(_ context.Context, _ int64, _ string, dir string, _ int) (string, error) {
 		require.NoError(t, os.MkdirAll(dir, 0o750))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "0.mp4"), []byte("video"), 0o640))
 		return "0.mp4", nil

@@ -101,6 +101,7 @@ func RegisterUserRoutes(
 		tokenLeaderboard := authenticated.Group("/token-leaderboard")
 		{
 			tokenLeaderboard.GET("", h.TokenLeaderboard.Get)
+			tokenLeaderboard.GET("/realtime", h.TokenLeaderboard.GetRealtime)
 			tokenLeaderboard.POST("/exchange", h.TokenLeaderboard.Exchange)
 		}
 

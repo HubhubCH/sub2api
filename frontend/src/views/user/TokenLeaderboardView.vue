@@ -22,7 +22,27 @@
           </div>
 
           <div class="hero-actions">
-            <label class="date-control">
+            <div class="leaderboard-tabs" role="tablist" aria-label="排行榜类型">
+              <button
+                type="button"
+                role="tab"
+                :aria-selected="viewMode === 'realtime'"
+                :class="{ 'is-active': viewMode === 'realtime' }"
+                @click="switchMode('realtime')"
+              >
+                {{ t('tokenLeaderboard.realtimeRanking') }}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                :aria-selected="viewMode === 'history'"
+                :class="{ 'is-active': viewMode === 'history' }"
+                @click="switchMode('history')"
+              >
+                {{ t('tokenLeaderboard.historyRanking') }}
+              </button>
+            </div>
+            <label v-if="viewMode === 'history'" class="date-control">
               <Icon name="calendar" size="sm" />
               <span>{{ t('tokenLeaderboard.statDate') }}</span>
               <input v-model="selectedDate" type="date" :min="minDate" :max="maxDate" @change="loadData()" />
@@ -48,7 +68,7 @@
               <strong>{{ data?.current_user ? formatTokens(data.current_user.total_tokens) : '-' }}</strong>
             </div>
             <div>
-              <span>{{ t('tokenLeaderboard.myReward') }}</span>
+              <span>{{ viewMode === 'realtime' ? t('tokenLeaderboard.estimatedReward') : t('tokenLeaderboard.myReward') }}</span>
               <strong>{{ data?.current_user?.reward_points ? `+${data.current_user.reward_points}` : '-' }}</strong>
             </div>
           </div>
@@ -63,11 +83,15 @@
         <section class="ranking-section card">
           <div class="section-heading">
             <div>
-              <h2>{{ t('tokenLeaderboard.dailyRanking') }}</h2>
-              <p>{{ t('tokenLeaderboard.historyLimit') }}</p>
+              <h2>{{ viewMode === 'realtime' ? t('tokenLeaderboard.realtimeRanking') : t('tokenLeaderboard.dailyRanking') }}</h2>
+              <p v-if="viewMode === 'realtime'">{{ t('tokenLeaderboard.realtimeHint') }}</p>
+              <p v-else>{{ t('tokenLeaderboard.historyLimit') }}</p>
+              <p v-if="viewMode === 'realtime' && lastRefreshedAt" class="refresh-time">
+                {{ t('tokenLeaderboard.refreshedAt', { time: formatDateTime(lastRefreshedAt.toISOString()) }) }}
+              </p>
             </div>
-            <span class="settled-badge" :class="data?.settled ? 'is-settled' : 'is-pending'">
-              {{ data?.settled ? t('tokenLeaderboard.settled') : t('tokenLeaderboard.pending') }}
+            <span class="settled-badge" :class="viewMode === 'realtime' ? 'is-realtime' : (data?.settled ? 'is-settled' : 'is-pending')">
+              {{ viewMode === 'realtime' ? t('tokenLeaderboard.realtimeStatus') : (data?.settled ? t('tokenLeaderboard.settled') : t('tokenLeaderboard.pending')) }}
             </span>
           </div>
 
@@ -138,7 +162,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -154,6 +178,9 @@ const authStore = useAuthStore()
 const data = ref<TokenLeaderboardData | null>(null)
 const loading = ref(false)
 const exchanging = ref(false)
+const viewMode = ref<'realtime' | 'history'>('realtime')
+const lastRefreshedAt = ref<Date | null>(null)
+let autoRefreshTimer: ReturnType<typeof setInterval> | null = null
 
 function shanghaiDate(offsetDays: number): string {
   const now = new Date(Date.now() + 8 * 60 * 60 * 1000)
@@ -208,15 +235,24 @@ function userLabel(entry: TokenLeaderboardEntry): string {
     : t('tokenLeaderboard.user', { id: entry.user_id })
 }
 
-async function loadData(): Promise<void> {
-  loading.value = true
+async function loadData(silent = false): Promise<void> {
+  if (!silent) loading.value = true
   try {
-    data.value = await tokenLeaderboardAPI.get(selectedDate.value)
+    data.value = viewMode.value === 'realtime'
+      ? await tokenLeaderboardAPI.getRealtime()
+      : await tokenLeaderboardAPI.get(selectedDate.value)
+    lastRefreshedAt.value = new Date()
   } catch (error) {
     appStore.showError(extractApiErrorMessage(error, t('tokenLeaderboard.loadFailed')))
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
+}
+
+function switchMode(mode: 'realtime' | 'history'): void {
+  if (viewMode.value === mode) return
+  viewMode.value = mode
+  void loadData()
 }
 
 async function exchangePoints(): Promise<void> {
@@ -236,6 +272,13 @@ async function exchangePoints(): Promise<void> {
 
 onMounted(() => {
   void loadData()
+  autoRefreshTimer = setInterval(() => {
+    if (viewMode.value === 'realtime') void loadData(true)
+  }, 5 * 60 * 1000)
+})
+
+onUnmounted(() => {
+  if (autoRefreshTimer) clearInterval(autoRefreshTimer)
 })
 </script>
 
@@ -250,6 +293,10 @@ onMounted(() => {
 .settlement-item span, .my-rank-head span, .my-rank-stats span { display: block; color: rgb(107 114 128); font-size: 12px; }
 .settlement-item strong { display: block; margin-top: 3px; color: rgb(31 41 55); font-size: 13px; }
 .hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.leaderboard-tabs { display: inline-flex; padding: 3px; border: 1px solid rgb(229 231 235); border-radius: 8px; background: rgb(249 250 251); }
+.leaderboard-tabs button { min-height: 32px; padding: 0 12px; color: rgb(107 114 128); border-radius: 6px; font-size: 13px; font-weight: 650; transition: color 150ms ease, background-color 150ms ease, box-shadow 150ms ease; }
+.leaderboard-tabs button.is-active { color: rgb(79 70 229); background: white; box-shadow: 0 1px 3px rgba(15, 23, 42, .08); }
+.leaderboard-tabs button:focus-visible { outline: 2px solid rgb(99 102 241); outline-offset: 2px; }
 .date-control { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 10px; color: rgb(75 85 99); border: 1px solid rgb(229 231 235); border-radius: 7px; background: white; font-size: 13px; }
 .date-control input { min-width: 124px; color: rgb(31 41 55); background: transparent; outline: none; }
 .my-rank-panel { padding: 20px; border: 1px solid rgb(253 230 138); border-radius: 8px; background: rgb(255 251 235); }
@@ -268,6 +315,8 @@ onMounted(() => {
 .settled-badge { padding: 5px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; }
 .is-settled { color: rgb(4 120 87); background: rgb(209 250 229); }
 .is-pending { color: rgb(180 83 9); background: rgb(254 243 199); }
+.is-realtime { color: rgb(67 56 202); background: rgb(224 231 255); }
+.refresh-time { color: rgb(99 102 241) !important; }
 .podium-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; padding: 16px 20px 0; }
 .podium-card { position: relative; min-height: 152px; padding: 56px 14px 14px; border: 1px solid rgb(229 231 235); border-radius: 7px; background: rgb(249 250 251); }
 .podium-card.rank-1 { border-color: rgb(253 230 138); background: rgb(255 251 235); }

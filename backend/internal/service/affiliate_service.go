@@ -20,12 +20,40 @@ var (
 )
 
 const (
-	affiliateInviteesLimit = 100
+	affiliateInviteesLimit            = 100
+	AffiliateSupervisorEmail          = "17636470647@163.com"
+	AffiliateAgentLevelOne            = 1
+	AffiliateAgentLevelTen            = 10
+	AffiliateAgentThreshold           = 500.0
+	AffiliateRechargeSourceRedeemCode = "redeem_code"
+	affiliateSignupBonusRedeemAmount  = 2.0
 	// AffiliateCodeMinLength / AffiliateCodeMaxLength bound both system-generated
 	// 12-char codes and admin-customized codes (e.g. "VIP2026").
 	AffiliateCodeMinLength = 4
 	AffiliateCodeMaxLength = 32
 )
+
+// isAffiliateSignupBonusRedeemAmount 识别注册额外赠送的 2 元余额兑换记录。
+// 该记录不参与邀请返利、累充和代理晋级。
+func isAffiliateSignupBonusRedeemAmount(amount float64) bool {
+	return math.Abs(amount-affiliateSignupBonusRedeemAmount) < 1e-8
+}
+
+// AffiliateInviteeInitialLevel 计算新绑定账户的初始代理层级。
+// 指定管理员直属邀请为一级，其他邀请按邀请人当前层级加一。
+func AffiliateInviteeInitialLevel(inviterLevel int, inviterIsSupervisor bool) int {
+	if inviterIsSupervisor {
+		return AffiliateAgentLevelOne
+	}
+	if inviterLevel < AffiliateAgentLevelOne {
+		return AffiliateAgentLevelTen
+	}
+	inviteeLevel := inviterLevel + 1
+	if inviteeLevel > AffiliateAgentLevelTen {
+		return AffiliateAgentLevelTen
+	}
+	return inviteeLevel
+}
 
 // affiliateCodeValidChar accepts uppercase letters, digits, underscore and dash.
 // All input passes through strings.ToUpper before validation, so lowercase from
@@ -58,32 +86,36 @@ func isValidAffiliateCodeFormat(code string) bool {
 }
 
 type AffiliateSummary struct {
-	UserID               int64     `json:"user_id"`
-	AffCode              string    `json:"aff_code"`
-	AffCodeCustom        bool      `json:"aff_code_custom"`
-	AffRebateRatePercent *float64  `json:"aff_rebate_rate_percent,omitempty"`
-	InviterID            *int64    `json:"inviter_id,omitempty"`
-	AffCount             int       `json:"aff_count"`
-	AffQuota             float64   `json:"aff_quota"`
-	AffFrozenQuota       float64   `json:"aff_frozen_quota"`
-	AffHistoryQuota      float64   `json:"aff_history_quota"`
-	CreatedAt            time.Time `json:"created_at"`
-	UpdatedAt            time.Time `json:"updated_at"`
+	UserID                  int64     `json:"user_id"`
+	AffCode                 string    `json:"aff_code"`
+	AffCodeCustom           bool      `json:"aff_code_custom"`
+	AffRebateRatePercent    *float64  `json:"aff_rebate_rate_percent,omitempty"`
+	InviterID               *int64    `json:"inviter_id,omitempty"`
+	AffCount                int       `json:"aff_count"`
+	AffQuota                float64   `json:"aff_quota"`
+	AffFrozenQuota          float64   `json:"aff_frozen_quota"`
+	AffHistoryQuota         float64   `json:"aff_history_quota"`
+	AgentLevel              int       `json:"agent_level"`
+	AgentCumulativeRecharge float64   `json:"agent_cumulative_recharge"`
+	CreatedAt               time.Time `json:"created_at"`
+	UpdatedAt               time.Time `json:"updated_at"`
 }
 
 type AffiliateInvitee struct {
-	UserID              int64      `json:"user_id"`
-	InviterID           int64      `json:"inviter_id"`
-	Email               string     `json:"email"`
-	Username            string     `json:"username"`
-	Level               int        `json:"level"`
-	CreatedAt           *time.Time `json:"created_at,omitempty"`
-	TotalRebate         float64    `json:"total_rebate"`
-	TotalRecharged      float64    `json:"total_recharged"`
-	LastRechargedAmount float64    `json:"last_recharged_amount"`
-	LastRechargedAt     *time.Time `json:"last_recharged_at,omitempty"`
-	TotalConsumed       float64    `json:"total_consumed"`
-	LastUsedAt          *time.Time `json:"last_used_at,omitempty"`
+	UserID                int64      `json:"user_id"`
+	InviterID             int64      `json:"inviter_id"`
+	Email                 string     `json:"email"`
+	Username              string     `json:"username"`
+	Level                 int        `json:"level"`
+	AgentLevel            int        `json:"agent_level"`
+	CreatedAt             *time.Time `json:"created_at,omitempty"`
+	TotalRebate           float64    `json:"total_rebate"`
+	TotalRecharged        float64    `json:"total_recharged"`
+	SubtreeTotalRecharged float64    `json:"subtree_total_recharged"`
+	LastRechargedAmount   float64    `json:"last_recharged_amount"`
+	LastRechargedAt       *time.Time `json:"last_recharged_at,omitempty"`
+	TotalConsumed         float64    `json:"total_consumed"`
+	LastUsedAt            *time.Time `json:"last_used_at,omitempty"`
 }
 
 type AffiliateInviteeRechargeRecord struct {
@@ -124,7 +156,17 @@ type AffiliateDetail struct {
 	// 优先用户自己的专属比例（aff_rebate_rate_percent），否则回退到全局比例。
 	// 用于在用户的 /affiliate 页面直观展示「分享后能拿到多少」。
 	EffectiveRebateRatePercent float64            `json:"effective_rebate_rate_percent"`
+	SupervisorView             bool               `json:"supervisor_view"`
 	Invitees                   []AffiliateInvitee `json:"invitees"`
+}
+
+type AffiliateAgentPromotion struct {
+	UserID             int64   `json:"user_id"`
+	FromLevel          int     `json:"from_level"`
+	ToLevel            int     `json:"to_level"`
+	OldInviterID       *int64  `json:"old_inviter_id,omitempty"`
+	NewInviterID       *int64  `json:"new_inviter_id,omitempty"`
+	CumulativeRecharge float64 `json:"cumulative_recharge"`
 }
 
 type AffiliateRepository interface {
@@ -135,7 +177,7 @@ type AffiliateRepository interface {
 	GetAccruedRebateFromInvitee(ctx context.Context, inviterID, inviteeUserID int64) (float64, error)
 	ThawFrozenQuota(ctx context.Context, userID int64) (float64, error)
 	TransferQuotaToBalance(ctx context.Context, userID int64) (float64, float64, error)
-	ListInvitees(ctx context.Context, inviterID int64, limit int) ([]AffiliateInvitee, error)
+	ListInvitees(ctx context.Context, inviterID int64, limit int, includeAllRoots bool) ([]AffiliateInvitee, error)
 
 	// 管理端：用户级专属配置
 	UpdateUserAffCode(ctx context.Context, userID int64, newCode string) error
@@ -147,7 +189,8 @@ type AffiliateRepository interface {
 	ListAffiliateRebateRecords(ctx context.Context, filter AffiliateRecordFilter) ([]AffiliateRebateRecord, int64, error)
 	ListAffiliateTransferRecords(ctx context.Context, filter AffiliateRecordFilter) ([]AffiliateTransferRecord, int64, error)
 	GetAffiliateUserOverview(ctx context.Context, userID int64) (*AffiliateUserOverview, error)
-	GetInviteeDetail(ctx context.Context, inviterID, inviteeID int64, days int) (*AffiliateInviteeDetail, error)
+	GetInviteeDetail(ctx context.Context, inviterID, inviteeID int64, days int, includeAllRoots bool) (*AffiliateInviteeDetail, error)
+	RecordRechargeAndPromote(ctx context.Context, userID int64, amount float64, sourceType string, sourceID int64) ([]AffiliateAgentPromotion, error)
 }
 
 // AffiliateAdminFilter 列表筛选条件
@@ -273,6 +316,15 @@ func (s *AffiliateService) EnsureUserAffiliate(ctx context.Context, userID int64
 }
 
 func (s *AffiliateService) GetAffiliateDetail(ctx context.Context, userID int64) (*AffiliateDetail, error) {
+	return s.getAffiliateDetail(ctx, userID, false)
+}
+
+// GetAffiliateSupervisorDetail 仅扩大指定管理员的只读查询范围，不改变邀请关系与返利入账。
+func (s *AffiliateService) GetAffiliateSupervisorDetail(ctx context.Context, userID int64) (*AffiliateDetail, error) {
+	return s.getAffiliateDetail(ctx, userID, true)
+}
+
+func (s *AffiliateService) getAffiliateDetail(ctx context.Context, userID int64, supervisorView bool) (*AffiliateDetail, error) {
 	// Lazy thaw: move any matured frozen quota to available before reading.
 	if s != nil && s.repo != nil {
 		// best-effort: thaw failure is non-fatal
@@ -283,19 +335,24 @@ func (s *AffiliateService) GetAffiliateDetail(ctx context.Context, userID int64)
 	if err != nil {
 		return nil, err
 	}
-	invitees, err := s.listInvitees(ctx, userID)
+	invitees, err := s.listInvitees(ctx, userID, supervisorView)
 	if err != nil {
 		return nil, err
+	}
+	affCount := summary.AffCount
+	if supervisorView {
+		affCount = len(invitees)
 	}
 	return &AffiliateDetail{
 		UserID:                     summary.UserID,
 		AffCode:                    summary.AffCode,
 		InviterID:                  summary.InviterID,
-		AffCount:                   summary.AffCount,
+		AffCount:                   affCount,
 		AffQuota:                   summary.AffQuota,
 		AffFrozenQuota:             summary.AffFrozenQuota,
 		AffHistoryQuota:            summary.AffHistoryQuota,
 		EffectiveRebateRatePercent: s.resolveRebateRatePercent(ctx, summary),
+		SupervisorView:             supervisorView,
 		Invitees:                   invitees,
 	}, nil
 }
@@ -457,11 +514,46 @@ func (s *AffiliateService) TransferAffiliateQuota(ctx context.Context, userID in
 	return transferred, balance, nil
 }
 
-func (s *AffiliateService) listInvitees(ctx context.Context, inviterID int64) ([]AffiliateInvitee, error) {
+// AffiliateAgentLevelForCumulativeRecharge 从账户原有代理层级开始，
+// 按不归零累充金额每满 500 元晋升一级，一级封顶。
+func AffiliateAgentLevelForCumulativeRecharge(initialLevel int, total float64) int {
+	if initialLevel <= AffiliateAgentLevelOne {
+		return AffiliateAgentLevelOne
+	}
+	promotedLevels := int(math.Floor(total / AffiliateAgentThreshold))
+	targetLevel := initialLevel - promotedLevels
+	if targetLevel < AffiliateAgentLevelOne {
+		return AffiliateAgentLevelOne
+	}
+	return targetLevel
+}
+
+// ProcessAgentRecharge 将本次充值累计给用户及其充值发生时的全部上游，并执行只升不降的晋级。
+func (s *AffiliateService) ProcessAgentRecharge(ctx context.Context, userID int64, amount float64, sourceType string, sourceID int64) ([]AffiliateAgentPromotion, error) {
 	if s == nil || s.repo == nil {
 		return nil, infraerrors.ServiceUnavailable("SERVICE_UNAVAILABLE", "affiliate service unavailable")
 	}
-	invitees, err := s.repo.ListInvitees(ctx, inviterID, affiliateInviteesLimit)
+	if userID <= 0 || sourceID <= 0 || amount <= 0 || math.IsNaN(amount) || math.IsInf(amount, 0) {
+		return nil, infraerrors.BadRequest("INVALID_AGENT_RECHARGE", "invalid agent recharge")
+	}
+	if sourceType != AffiliateRechargeSourceRedeemCode {
+		return nil, infraerrors.BadRequest("INVALID_AGENT_RECHARGE_SOURCE", "invalid agent recharge source")
+	}
+	if isAffiliateSignupBonusRedeemAmount(amount) {
+		return []AffiliateAgentPromotion{}, nil
+	}
+	return s.repo.RecordRechargeAndPromote(ctx, userID, amount, sourceType, sourceID)
+}
+
+func (s *AffiliateService) listInvitees(ctx context.Context, inviterID int64, includeAllRoots bool) ([]AffiliateInvitee, error) {
+	if s == nil || s.repo == nil {
+		return nil, infraerrors.ServiceUnavailable("SERVICE_UNAVAILABLE", "affiliate service unavailable")
+	}
+	limit := affiliateInviteesLimit
+	if includeAllRoots {
+		limit = 0
+	}
+	invitees, err := s.repo.ListInvitees(ctx, inviterID, limit, includeAllRoots)
 	if err != nil {
 		return nil, err
 	}
@@ -660,6 +752,15 @@ func (s *AffiliateService) AdminGetUserOverview(ctx context.Context, userID int6
 }
 
 func (s *AffiliateService) GetInviteeDetail(ctx context.Context, inviterID, inviteeID int64, days int) (*AffiliateInviteeDetail, error) {
+	return s.getInviteeDetail(ctx, inviterID, inviteeID, days, false)
+}
+
+// GetSupervisorInviteeDetail 允许指定管理员查看全量代理森林中的用户详情。
+func (s *AffiliateService) GetSupervisorInviteeDetail(ctx context.Context, inviterID, inviteeID int64, days int) (*AffiliateInviteeDetail, error) {
+	return s.getInviteeDetail(ctx, inviterID, inviteeID, days, true)
+}
+
+func (s *AffiliateService) getInviteeDetail(ctx context.Context, inviterID, inviteeID int64, days int, includeAllRoots bool) (*AffiliateInviteeDetail, error) {
 	if inviterID <= 0 || inviteeID <= 0 {
 		return nil, infraerrors.BadRequest("INVALID_USER", "invalid user")
 	}
@@ -672,7 +773,7 @@ func (s *AffiliateService) GetInviteeDetail(ctx context.Context, inviterID, invi
 	if s == nil || s.repo == nil {
 		return nil, infraerrors.ServiceUnavailable("SERVICE_UNAVAILABLE", "affiliate service unavailable")
 	}
-	detail, err := s.repo.GetInviteeDetail(ctx, inviterID, inviteeID, days)
+	detail, err := s.repo.GetInviteeDetail(ctx, inviterID, inviteeID, days, includeAllRoots)
 	if err != nil {
 		return nil, err
 	}

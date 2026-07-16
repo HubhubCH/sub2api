@@ -32,6 +32,20 @@ func (h *TokenLeaderboardHandler) Get(c *gin.Context) {
 	response.Success(c, data)
 }
 
+func (h *TokenLeaderboardHandler) GetRealtime(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "用户未登录")
+		return
+	}
+	data, err := h.service.GetRealtime(c.Request.Context(), subject.UserID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, data)
+}
+
 type tokenPointExchangeRequest struct {
 	Points int64 `json:"points" binding:"required"`
 }

@@ -337,6 +337,8 @@ func (s *PaymentService) doBalance(ctx context.Context, o *dbent.PaymentOrder, l
 		if err := s.applyAffiliateRebateForOrder(ctx, o); err != nil {
 			return err
 		}
+		// 累充只以兑换记录为准；旧履约在兑换后中断时可在此幂等补记。
+		s.redeemService.tryProcessAgentPromotionForRedeem(ctx, o.UserID, existing)
 		// Code already created and redeemed — just mark completed
 		return s.markCompleted(ctx, o, lease, "RECHARGE_SUCCESS")
 	case redeemActionCreate:
@@ -699,7 +701,12 @@ func affiliateRebateBaseAmount(o *dbent.PaymentOrder) float64 {
 		return 0
 	}
 	switch o.OrderType {
-	case payment.OrderTypeBalance, payment.OrderTypeSubscription:
+	case payment.OrderTypeBalance:
+		if isAffiliateSignupBonusRedeemAmount(o.Amount) {
+			return 0
+		}
+		return o.Amount
+	case payment.OrderTypeSubscription:
 		return o.Amount
 	default:
 		return 0

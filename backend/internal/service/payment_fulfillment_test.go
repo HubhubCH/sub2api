@@ -49,10 +49,18 @@ type paymentFulfillmentAffiliateAccrueCall struct {
 	sourceOrderID *int64
 }
 
+type paymentFulfillmentAgentRechargeCall struct {
+	userID     int64
+	amount     float64
+	sourceType string
+	sourceID   int64
+}
+
 type paymentFulfillmentAffiliateRepoStub struct {
-	inviteeSummary *AffiliateSummary
-	inviterSummary *AffiliateSummary
-	accrueCalls    []paymentFulfillmentAffiliateAccrueCall
+	inviteeSummary     *AffiliateSummary
+	inviterSummary     *AffiliateSummary
+	accrueCalls        []paymentFulfillmentAffiliateAccrueCall
+	agentRechargeCalls []paymentFulfillmentAgentRechargeCall
 }
 
 func (r *paymentFulfillmentAffiliateRepoStub) EnsureUserAffiliate(_ context.Context, userID int64) (*AffiliateSummary, error) {
@@ -104,7 +112,7 @@ func (r *paymentFulfillmentAffiliateRepoStub) TransferQuotaToBalance(context.Con
 	panic("unexpected TransferQuotaToBalance call")
 }
 
-func (r *paymentFulfillmentAffiliateRepoStub) ListInvitees(context.Context, int64, int) ([]AffiliateInvitee, error) {
+func (r *paymentFulfillmentAffiliateRepoStub) ListInvitees(context.Context, int64, int, bool) ([]AffiliateInvitee, error) {
 	panic("unexpected ListInvitees call")
 }
 
@@ -144,8 +152,15 @@ func (r *paymentFulfillmentAffiliateRepoStub) GetAffiliateUserOverview(context.C
 	panic("unexpected GetAffiliateUserOverview call")
 }
 
-func (r *paymentFulfillmentAffiliateRepoStub) GetInviteeDetail(context.Context, int64, int64, int) (*AffiliateInviteeDetail, error) {
+func (r *paymentFulfillmentAffiliateRepoStub) GetInviteeDetail(context.Context, int64, int64, int, bool) (*AffiliateInviteeDetail, error) {
 	panic("unexpected GetInviteeDetail call")
+}
+
+func (r *paymentFulfillmentAffiliateRepoStub) RecordRechargeAndPromote(_ context.Context, userID int64, amount float64, sourceType string, sourceID int64) ([]AffiliateAgentPromotion, error) {
+	r.agentRechargeCalls = append(r.agentRechargeCalls, paymentFulfillmentAgentRechargeCall{
+		userID: userID, amount: amount, sourceType: sourceType, sourceID: sourceID,
+	})
+	return nil, nil
 }
 
 type paymentFulfillmentSettingRepoStub struct {
@@ -994,6 +1009,49 @@ func TestExecuteSubscriptionFulfillmentDoesNotDuplicateWorkAfterLegacySuccessAud
 	require.Equal(t, OrderStatusCompleted, reloaded.Status)
 	require.Empty(t, affiliateRepo.accrueCalls)
 	require.Zero(t, subRepo.createCalls)
+}
+
+func TestPaymentRedeemContextUsesRedeemRecordForAgentRecharge(t *testing.T) {
+	affiliateRepo := &paymentFulfillmentAffiliateRepoStub{}
+	redeemService := &RedeemService{
+		affiliateService: NewAffiliateService(affiliateRepo, nil, nil, nil),
+	}
+	redeemCode := &RedeemCode{ID: 88, Type: RedeemTypeBalance, Value: 500}
+
+	redeemService.tryProcessAgentPromotionForRedeem(
+		ContextSkipRedeemAffiliate(context.Background()),
+		42,
+		redeemCode,
+	)
+
+	require.Equal(t, []paymentFulfillmentAgentRechargeCall{{
+		userID: 42, amount: 500, sourceType: AffiliateRechargeSourceRedeemCode, sourceID: 88,
+	}}, affiliateRepo.agentRechargeCalls)
+
+	// 2 元兑换记录是注册赠送，不得产生返利或累充。
+	redeemService.tryAccrueAffiliateRebateForRedeem(context.Background(), 42, 2)
+	redeemService.tryProcessAgentPromotionForRedeem(
+		context.Background(),
+		42,
+		&RedeemCode{ID: 89, Type: RedeemTypeBalance, Value: 2},
+	)
+	require.Empty(t, affiliateRepo.accrueCalls)
+	require.Len(t, affiliateRepo.agentRechargeCalls, 1)
+}
+
+func TestAffiliateRebateBaseAmountExcludesSignupBonusBalance(t *testing.T) {
+	require.Zero(t, affiliateRebateBaseAmount(&dbent.PaymentOrder{
+		OrderType: payment.OrderTypeBalance,
+		Amount:    2,
+	}))
+	require.Equal(t, 2.01, affiliateRebateBaseAmount(&dbent.PaymentOrder{
+		OrderType: payment.OrderTypeBalance,
+		Amount:    2.01,
+	}))
+	require.Equal(t, 2.0, affiliateRebateBaseAmount(&dbent.PaymentOrder{
+		OrderType: payment.OrderTypeSubscription,
+		Amount:    2,
+	}))
 }
 
 var _ AffiliateRepository = (*paymentFulfillmentAffiliateRepoStub)(nil)

@@ -97,6 +97,14 @@
             <option value="webp">WebP</option>
             <option value="jpeg">JPEG</option>
           </select>
+
+          <div class="cost-estimate">
+            <div>
+              <span>预估费用</span>
+              <strong>{{ estimatedCostLabel }}</strong>
+            </div>
+            <p>{{ estimatedCostHint }}</p>
+          </div>
         </section>
 
         <section class="panel-section">
@@ -104,15 +112,70 @@
             <h2>参考图</h2>
             <button v-if="referencePreview" type="button" class="link-button" @click="clearReference">清除</button>
           </div>
-          <label class="upload-box" for="reference-upload">
+          <label
+            class="upload-box"
+            :class="{ 'is-dragging': referenceDragging }"
+            for="reference-upload"
+            @dragenter.prevent="handleReferenceDragEnter"
+            @dragover.prevent="referenceDragging = true"
+            @dragleave.prevent="handleReferenceDragLeave"
+            @drop.prevent="handleReferenceDrop"
+          >
             <input id="reference-upload" class="upload-input" type="file" accept="image/*" @change="handleReferenceUpload" />
             <img v-if="referencePreview" :src="referencePreview" alt="参考图预览" />
             <span v-else>
               <Icon name="upload" size="lg" />
-              上传参考图
+              点击或拖拽图片到这里
             </span>
           </label>
-          <p class="field-hint">上传参考图后会使用图片编辑接口；不上传时走文生图。</p>
+          <div v-if="referenceFile" class="outpaint-option">
+            <label for="outpaint-enabled" class="outpaint-toggle">
+              <input id="outpaint-enabled" v-model="outpaintEnabled" type="checkbox" />
+              <span>扩图模式</span>
+            </label>
+            <div v-if="outpaintEnabled" class="outpaint-controls">
+              <div class="outpaint-mode-tabs" role="radiogroup" aria-label="扩图方式">
+                <label v-for="mode in outpaintModes" :key="mode.value">
+                  <input v-model="outpaintForm.mode" type="radio" name="outpaint-mode" :value="mode.value" />
+                  <span>{{ mode.label }}</span>
+                </label>
+              </div>
+
+              <div v-if="outpaintForm.mode === 'scale'">
+                <label class="field-label compact-label" for="outpaint-scale">等比扩展倍数</label>
+                <select id="outpaint-scale" v-model.number="outpaintForm.scale" class="field-control compact-control">
+                  <option :value="1.25">1.25×</option>
+                  <option :value="1.5">1.5×</option>
+                  <option :value="2">2×</option>
+                </select>
+              </div>
+
+              <div v-else-if="outpaintForm.mode === 'free'" class="outpaint-free-grid">
+                <label v-for="side in outpaintSides" :key="side.value" :for="`outpaint-${side.value}`">
+                  <span>{{ side.label }}</span>
+                  <input
+                    :id="`outpaint-${side.value}`"
+                    v-model.number="outpaintForm[side.value]"
+                    class="field-control compact-control"
+                    type="number"
+                    min="0"
+                    max="2048"
+                    step="16"
+                  />
+                </label>
+              </div>
+
+              <div v-else>
+                <label class="field-label compact-label" for="outpaint-ratio">常用比例</label>
+                <select id="outpaint-ratio" v-model="outpaintForm.ratio" class="field-control compact-control">
+                  <option v-for="ratio in outpaintRatios" :key="ratio" :value="ratio">{{ ratio }}</option>
+                </select>
+              </div>
+
+              <p class="outpaint-canvas-hint">{{ outpaintCanvasHint }}</p>
+            </div>
+          </div>
+          <p class="field-hint">支持点击或拖拽上传。开启扩图后，GPT Image 与 Grok 都会使用图片编辑接口补全透明区域。</p>
         </section>
       </aside>
 
@@ -166,6 +229,10 @@
               <Icon name="refresh" size="sm" />
               继续修改
             </button>
+            <button type="button" class="secondary-button outpaint-result-button" @click="useResultForOutpaint">
+              <Icon name="sparkles" size="sm" />
+              扩图
+            </button>
           </div>
 
           <div v-if="statusMessage || errorMessage" class="task-strip">
@@ -206,9 +273,14 @@ import GenerationHistoryPanel from '@/components/user/GenerationHistoryPanel.vue
 import { generationRecordsAPI, type GenerationRecord } from '@/api/generationRecords'
 import { keysAPI } from '@/api'
 import { imageGenerationAPI, type ImageGenerationItem } from '@/api/imageGeneration'
-import type { ApiKey } from '@/types'
+import type { ApiKey, Group } from '@/types'
 import { useAppStore } from '@/stores/app'
 import { extractApiErrorMessage } from '@/utils/apiError'
+import {
+  calculateOutpaintLayout,
+  createOutpaintFiles,
+  type OutpaintOptions,
+} from '@/utils/imageOutpaint'
 
 interface ModelPreset {
   label: string
@@ -245,6 +317,9 @@ interface ImageResult {
   url?: string
   revisedPrompt?: string
 }
+
+type OutpaintMode = 'scale' | 'free' | 'ratio'
+type OutpaintSide = 'top' | 'right' | 'bottom' | 'left'
 
 const appStore = useAppStore()
 
@@ -299,6 +374,9 @@ const statusMessage = ref('')
 const errorMessage = ref('')
 const referenceFile = ref<File | null>(null)
 const referencePreview = ref('')
+const referenceDimensions = ref<{ width: number; height: number } | null>(null)
+const referenceDragging = ref(false)
+const outpaintEnabled = ref(false)
 const results = ref<ImageResult[]>([])
 const selectedResultIndex = ref(0)
 const elapsedSeconds = ref(0)
@@ -307,6 +385,8 @@ let modelRequestVersion = 0
 let elapsedTimer: number | null = null
 let generationStartedAt = 0
 let historyResultUrl = ''
+let referenceDragDepth = 0
+let referenceDimensionVersion = 0
 
 const form = reactive({
   model: '',
@@ -319,6 +399,28 @@ const form = reactive({
   outputFormat: 'png'
 })
 
+const outpaintModes: Array<{ label: string; value: OutpaintMode }> = [
+  { label: '等比扩展', value: 'scale' },
+  { label: '自由扩展', value: 'free' },
+  { label: '常用比例', value: 'ratio' },
+]
+const outpaintSides: Array<{ label: string; value: OutpaintSide }> = [
+  { label: '上', value: 'top' },
+  { label: '右', value: 'right' },
+  { label: '下', value: 'bottom' },
+  { label: '左', value: 'left' },
+]
+const outpaintRatios = ['1:1', '4:3', '3:4', '3:2', '2:3', '16:9', '9:16', '21:9']
+const outpaintForm = reactive({
+  mode: 'ratio' as OutpaintMode,
+  scale: 1.5,
+  top: 256,
+  right: 256,
+  bottom: 256,
+  left: 256,
+  ratio: '3:2',
+})
+
 const selectedApiKey = computed(() => apiKeys.value.find((key) => String(key.id) === selectedKeyId.value) ?? null)
 const availableSizePresets = computed(() => sizePresets.filter((item) => item.ratio === form.ratio))
 const selectedResult = computed(() => results.value[selectedResultIndex.value] ?? null)
@@ -327,6 +429,65 @@ const canSubmit = computed(() => Boolean(
   prompt.value &&
   modelPresets.value.some((model) => model.value === form.model)
 ))
+const outpaintOptions = computed<OutpaintOptions>(() => {
+  if (outpaintForm.mode === 'scale') {
+    return { mode: 'scale', scale: outpaintForm.scale, maxEdge: 2048 }
+  }
+  if (outpaintForm.mode === 'free') {
+    return {
+      mode: 'free',
+      top: outpaintForm.top,
+      right: outpaintForm.right,
+      bottom: outpaintForm.bottom,
+      left: outpaintForm.left,
+      maxEdge: 2048,
+    }
+  }
+  return { mode: 'ratio', ratio: outpaintForm.ratio, maxEdge: 2048 }
+})
+const estimatedOutpaintLayout = computed(() => {
+  if (!outpaintEnabled.value || !referenceDimensions.value) return null
+  try {
+    return calculateOutpaintLayout(
+      referenceDimensions.value.width,
+      referenceDimensions.value.height,
+      outpaintOptions.value,
+    )
+  } catch {
+    return null
+  }
+})
+const estimatedOutputDimensions = computed(() => {
+  const layout = estimatedOutpaintLayout.value
+  return layout ? { width: layout.width, height: layout.height } : safeDimensions(form.width, form.height)
+})
+const outpaintCanvasHint = computed(() => {
+  const layout = estimatedOutpaintLayout.value
+  if (!layout) return '上传图片后会自动计算最终画布，最长边不超过 2048px。'
+  return `预计画布 ${layout.width} × ${layout.height}px，原图区域保持不变，透明区域由 AI 补全。`
+})
+const estimatedBillingTier = computed(() => {
+  const longest = Math.max(estimatedOutputDimensions.value.width, estimatedOutputDimensions.value.height)
+  if (longest <= 1024) return '1K'
+  if (longest <= 2048) return '2K'
+  return '4K'
+})
+const estimatedCost = computed(() => {
+  if (!selectedApiKey.value || !form.model) return null
+  const group = selectedApiKey.value.group
+  const tier = estimatedBillingTier.value
+  const configuredPrice = groupImagePrice(group, tier)
+  const unitPrice = configuredPrice ?? defaultImageUnitPrice(form.model, tier)
+  const groupRate = group?.rate_multiplier ?? 1
+  const multiplier = group?.image_rate_independent ? group.image_rate_multiplier : groupRate
+  const count = Math.min(4, Math.max(1, Number(form.count) || 1))
+  return Math.max(0, unitPrice * Math.max(0, multiplier) * count)
+})
+const estimatedCostLabel = computed(() => estimatedCost.value == null ? '--' : `约 $${estimatedCost.value.toFixed(4)}`)
+const estimatedCostHint = computed(() => {
+  const count = Math.min(4, Math.max(1, Number(form.count) || 1))
+  return `${estimatedBillingTier.value} · ${count} 张 · 按当前分组配置估算，编辑输入与实际扣费以账单为准。`
+})
 const previewAspectStyle = computed(() => {
   const requested = safeDimensions(form.width, form.height)
   const width = selectedResult.value?.width ?? requested.width
@@ -338,6 +499,28 @@ const previewAspectStyle = computed(() => {
     '--result-max-width': `${62 * aspect}vh`
   }
 })
+
+function groupImagePrice(group: Group | undefined, tier: string): number | null {
+  if (!group) return null
+  const value = tier === '1K'
+    ? group.image_price_1k
+    : tier === '4K'
+      ? group.image_price_4k
+      : group.image_price_2k
+  return typeof value === 'number' && value >= 0 ? value : null
+}
+
+function defaultImageUnitPrice(model: string, tier: string): number {
+  const normalized = model.trim().toLowerCase()
+  if (normalized === 'grok-imagine-image-quality') return tier === '1K' ? 0.05 : 0.07
+  if (normalized === 'grok-imagine' || normalized === 'grok-imagine-image' || normalized === 'grok-imagine-edit') {
+    return 0.02
+  }
+  const base = 0.134
+  if (tier === '2K') return base * 1.5
+  if (tier === '4K') return base * 2
+  return base
+}
 
 function safeDimensions(width: number, height: number): { width: number; height: number } {
   let safeWidth = Number.isFinite(width) && width > 0 ? width : 1024
@@ -398,6 +581,13 @@ function resetDefaults() {
   form.height = 1024
   form.count = 1
   form.outputFormat = 'png'
+  outpaintForm.mode = 'ratio'
+  outpaintForm.scale = 1.5
+  outpaintForm.top = 256
+  outpaintForm.right = 256
+  outpaintForm.bottom = 256
+  outpaintForm.left = 256
+  outpaintForm.ratio = '3:2'
 }
 
 function applyRatioPreset() {
@@ -445,17 +635,67 @@ function greatestCommonDivisor(a: number, b: number): number {
   return x || 1
 }
 
+function isImageFile(file: File): boolean {
+  return file.type.startsWith('image/') || /\.(?:avif|gif|jpe?g|png|webp)$/i.test(file.name)
+}
+
+function setReferenceFile(file: File, knownDimensions?: { width: number; height: number }): boolean {
+  if (!isImageFile(file)) {
+    appStore.showError('只能上传图片文件')
+    return false
+  }
+  const version = ++referenceDimensionVersion
+  referenceFile.value = file
+  referenceDimensions.value = knownDimensions ?? null
+  if (referencePreview.value) URL.revokeObjectURL(referencePreview.value)
+  referencePreview.value = URL.createObjectURL(file)
+  if (!knownDimensions && typeof createImageBitmap === 'function') {
+    void createImageBitmap(file).then((bitmap) => {
+      if (version === referenceDimensionVersion) {
+        referenceDimensions.value = { width: bitmap.width, height: bitmap.height }
+      }
+      bitmap.close()
+    }).catch(() => {
+      if (version === referenceDimensionVersion) referenceDimensions.value = null
+    })
+  }
+  return true
+}
+
 function handleReferenceUpload(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   if (!file) return
-  referenceFile.value = file
-  if (referencePreview.value) URL.revokeObjectURL(referencePreview.value)
-  referencePreview.value = URL.createObjectURL(file)
+  outpaintEnabled.value = false
+  setReferenceFile(file)
+}
+
+function handleReferenceDragEnter() {
+  referenceDragDepth += 1
+  referenceDragging.value = true
+}
+
+function handleReferenceDragLeave() {
+  referenceDragDepth = Math.max(0, referenceDragDepth - 1)
+  if (referenceDragDepth === 0) referenceDragging.value = false
+}
+
+function handleReferenceDrop(event: DragEvent) {
+  referenceDragDepth = 0
+  referenceDragging.value = false
+  const file = event.dataTransfer?.files?.[0]
+  if (!file) return
+  outpaintEnabled.value = false
+  setReferenceFile(file)
 }
 
 function clearReference() {
+  referenceDimensionVersion += 1
   referenceFile.value = null
+  referenceDimensions.value = null
+  outpaintEnabled.value = false
+  referenceDragDepth = 0
+  referenceDragging.value = false
   if (referencePreview.value) URL.revokeObjectURL(referencePreview.value)
   referencePreview.value = ''
 }
@@ -558,33 +798,65 @@ async function handleGenerate() {
 
   submitting.value = true
   errorMessage.value = ''
-  statusMessage.value = referenceFile.value ? '正在按参考图修改' : '正在生成图片'
+  const isOutpainting = Boolean(referenceFile.value && outpaintEnabled.value)
+  statusMessage.value = isOutpainting ? '正在扩图并补全透明区域' : referenceFile.value ? '正在按参考图修改' : '正在生成图片'
   startElapsedTimer()
 
   try {
-    const { width: requestedWidth, height: requestedHeight } = safeDimensions(form.width, form.height)
-    form.width = requestedWidth
-    form.height = requestedHeight
+    const requested = safeDimensions(form.width, form.height)
+    let outputWidth = requested.width
+    let outputHeight = requested.height
+    let outpaintFiles: Awaited<ReturnType<typeof createOutpaintFiles>> | null = null
+    if (isOutpainting && referenceFile.value) {
+      outpaintFiles = await createOutpaintFiles(referenceFile.value, outpaintOptions.value)
+      outputWidth = outpaintFiles.width
+      outputHeight = outpaintFiles.height
+      form.width = outputWidth
+      form.height = outputHeight
+      form.sizePreset = 'custom'
+      form.ratio = outpaintForm.mode === 'ratio'
+        ? outpaintForm.ratio
+        : approximateRatio(outputWidth, outputHeight)
+    } else {
+      form.width = outputWidth
+      form.height = outputHeight
+    }
     const payload = {
       apiKey: selectedApiKey.value.key,
       model: form.model,
       prompt: prompt.value,
-      size: `${requestedWidth}x${requestedHeight}`,
+      size: `${outputWidth}x${outputHeight}`,
       quality: form.quality,
       count: Math.min(4, Math.max(1, Number(form.count) || 1)),
       outputFormat: form.outputFormat
     }
-    const response = referenceFile.value
-      ? await imageGenerationAPI.editImage({ ...payload, image: referenceFile.value })
-      : await imageGenerationAPI.generateImage(payload)
-    const extracted = extractResults(response, requestedWidth, requestedHeight)
+    let response
+    if (referenceFile.value) {
+      let editSource = referenceFile.value
+      let mask: File | undefined
+      let editPrompt = prompt.value
+      if (outpaintFiles) {
+        editSource = outpaintFiles.image
+        mask = outpaintFiles.mask
+        editPrompt = `保持原图已有区域、主体、风格、光影和细节不变，仅自然补全透明区域。扩展要求：${prompt.value}`
+      }
+      response = await imageGenerationAPI.editImage({
+        ...payload,
+        prompt: editPrompt,
+        image: editSource,
+        mask
+      })
+    } else {
+      response = await imageGenerationAPI.generateImage(payload)
+    }
+    const extracted = extractResults(response, outputWidth, outputHeight)
     if (extracted.length === 0) {
       throw new Error('接口已返回，但没有找到可展示的图片结果')
     }
     results.value = extracted
     selectedResultIndex.value = 0
     lastPrompt.value = prompt.value
-    statusMessage.value = `已生成 ${extracted.length} 张图片`
+    statusMessage.value = isOutpainting ? `扩图完成，共 ${extracted.length} 张` : `已生成 ${extracted.length} 张图片`
   } catch (error) {
     const message = extractApiErrorMessage(error, '生成失败，请检查密钥、模型或尺寸参数')
     errorMessage.value = message
@@ -674,6 +946,27 @@ function useResultPrompt() {
   }
   if (lastPrompt.value) {
     prompt.value = `${lastPrompt.value}，继续优化画面细节和构图`
+  }
+}
+
+async function useResultForOutpaint() {
+  const result = selectedResult.value
+  if (!result) return
+  try {
+    const blob = result.b64
+      ? base64ToBlob(result.b64, result.mimeType)
+      : await fetch(result.src).then((response) => {
+          if (!response.ok) throw new Error(`读取图片失败（HTTP ${response.status}）`)
+          return response.blob()
+        })
+    const extension = result.mimeType.split('/')[1]?.replace('jpeg', 'jpg') || 'png'
+    const source = new File([blob], `outpaint-reference.${extension}`, { type: result.mimeType })
+    if (!setReferenceFile(source, { width: result.width, height: result.height })) return
+    outpaintEnabled.value = true
+    statusMessage.value = '已进入扩图模式，请选择目标比例和尺寸后生成'
+    errorMessage.value = ''
+  } catch (error) {
+    appStore.showError(extractApiErrorMessage(error, '准备扩图原图失败'))
   }
 }
 
@@ -805,6 +1098,36 @@ onBeforeUnmount(() => {
   line-height: 1.6;
 }
 
+.cost-estimate {
+  margin-top: 14px;
+  border: 1px solid rgba(14, 165, 233, 0.18);
+  border-radius: 14px;
+  background: rgba(240, 249, 255, 0.86);
+  padding: 11px 12px;
+}
+
+.cost-estimate div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.cost-estimate strong {
+  color: #0369a1;
+  font-size: 15px;
+}
+
+.cost-estimate p {
+  margin: 6px 0 0;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .status-pill,
 .task-badge {
   display: inline-flex;
@@ -843,6 +1166,14 @@ onBeforeUnmount(() => {
   font-weight: 700;
   padding: 12px;
   text-align: center;
+  transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease, color 0.2s ease;
+}
+
+.upload-box.is-dragging {
+  border-color: #14b8a6;
+  background: #ecfdf5;
+  box-shadow: 0 0 0 4px rgba(20, 184, 166, 0.14);
+  color: #0f766e;
 }
 
 .upload-box span {
@@ -859,6 +1190,111 @@ onBeforeUnmount(() => {
   width: 100%;
   max-height: 180px;
   object-fit: contain;
+}
+
+.outpaint-option {
+  margin-top: 10px;
+  border: 1px solid rgba(20, 184, 166, 0.2);
+  border-radius: 14px;
+  background: rgba(240, 253, 250, 0.8);
+  padding: 10px 12px;
+}
+
+.outpaint-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #0f766e;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.outpaint-toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: #14b8a6;
+}
+
+.outpaint-option > p {
+  margin: 6px 0 0 24px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.outpaint-controls {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.outpaint-mode-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.outpaint-mode-tabs label {
+  position: relative;
+  cursor: pointer;
+}
+
+.outpaint-mode-tabs input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.outpaint-mode-tabs span {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #dbeafe;
+  border-radius: 9px;
+  background: #fff;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.outpaint-mode-tabs input:checked + span {
+  border-color: #14b8a6;
+  background: #ccfbf1;
+  color: #0f766e;
+}
+
+.compact-label {
+  margin-top: 0;
+}
+
+.compact-control {
+  border-radius: 10px;
+  padding: 8px 9px;
+  font-size: 12px;
+}
+
+.outpaint-free-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.outpaint-free-grid label span {
+  display: block;
+  margin-bottom: 4px;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.outpaint-canvas-hint {
+  margin: 0;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .workspace-card {

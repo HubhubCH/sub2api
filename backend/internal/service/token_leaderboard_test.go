@@ -70,3 +70,42 @@ func TestNextTokenLeaderboardSettlement(t *testing.T) {
 	require.Equal(t, "2026-07-14 00:05", nextTokenLeaderboardSettlement(before).Format("2006-01-02 15:04"))
 	require.Equal(t, "2026-07-15 00:05", nextTokenLeaderboardSettlement(after).Format("2006-01-02 15:04"))
 }
+
+type tokenLeaderboardRealtimeRepoStub struct {
+	date  time.Time
+	start time.Time
+	end   time.Time
+}
+
+func (r *tokenLeaderboardRealtimeRepoStub) ListDaily(_ context.Context, date, start, end time.Time, currentUserID int64) ([]TokenLeaderboardEntry, bool, *time.Time, int64, error) {
+	r.date = date
+	r.start = start
+	r.end = end
+	return []TokenLeaderboardEntry{{Rank: 1, UserID: currentUserID, TotalTokens: 123}}, false, nil, 0, nil
+}
+
+func (r *tokenLeaderboardRealtimeRepoStub) SettleDaily(context.Context, time.Time, time.Time, time.Time) error {
+	return nil
+}
+
+func (r *tokenLeaderboardRealtimeRepoStub) ExchangePoints(context.Context, int64, int64, float64) (int64, float64, error) {
+	return 0, 0, nil
+}
+
+func TestTokenLeaderboardRealtimeUsesShanghaiTodayWithoutSettlement(t *testing.T) {
+	t.Setenv("TOKEN_LEADERBOARD_ANON_SALT", "realtime-test-salt")
+	repo := &tokenLeaderboardRealtimeRepoStub{}
+	svc := NewTokenLeaderboardService(repo, nil, nil, true)
+	svc.now = func() time.Time {
+		return time.Date(2026, 7, 15, 12, 30, 0, 0, tokenLeaderboardLocation())
+	}
+
+	data, err := svc.GetRealtime(context.Background(), 42)
+	require.NoError(t, err)
+	require.True(t, data.Realtime)
+	require.False(t, data.Settled)
+	require.Equal(t, "2026-07-15", data.Date)
+	require.Equal(t, "2026-07-14 16:00", repo.start.Format("2006-01-02 15:04"))
+	require.Equal(t, "2026-07-15 16:00", repo.end.Format("2006-01-02 15:04"))
+	require.Equal(t, 20, data.CurrentUser.RewardPoints)
+}

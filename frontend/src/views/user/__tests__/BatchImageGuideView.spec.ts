@@ -5,6 +5,7 @@ const listKeys = vi.hoisted(() => vi.fn())
 const listImageModels = vi.hoisted(() => vi.fn())
 const generateImage = vi.hoisted(() => vi.fn())
 const editImage = vi.hoisted(() => vi.fn())
+const createOutpaintFiles = vi.hoisted(() => vi.fn())
 const getGenerationRecordContent = vi.hoisted(() => vi.fn())
 const showError = vi.hoisted(() => vi.fn())
 
@@ -26,6 +27,10 @@ vi.mock('@/api/generationRecords', () => ({
   generationRecordsAPI: {
     content: getGenerationRecordContent,
   },
+}))
+
+vi.mock('@/utils/imageOutpaint', () => ({
+  createOutpaintFiles,
 }))
 
 vi.mock('@/stores/app', () => ({
@@ -70,8 +75,14 @@ describe('BatchImageGuideView generated image presentation', () => {
     listImageModels.mockReset()
     generateImage.mockReset()
     editImage.mockReset()
+    createOutpaintFiles.mockReset()
     getGenerationRecordContent.mockReset()
     showError.mockReset()
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: vi.fn(() => 'blob:https://88token.net/reference-image'),
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
 
     listKeys.mockResolvedValue({
       items: [{ id: 1, name: 'Image key', key: 'sk-image-test', status: 'active' }],
@@ -83,6 +94,15 @@ describe('BatchImageGuideView generated image presentation', () => {
         output_format: 'png',
         size: '1024x1536',
       }],
+    })
+    createOutpaintFiles.mockResolvedValue({
+      image: new File(['expanded-image'], 'outpaint-source.png', { type: 'image/png' }),
+      mask: new File(['expanded-mask'], 'outpaint-mask.png', { type: 'image/png' }),
+      width: 1536,
+      height: 1024,
+    })
+    editImage.mockResolvedValue({
+      data: [{ b64_json: 'ZXhwYW5kZWQ=', output_format: 'png' }],
     })
   })
 
@@ -178,6 +198,110 @@ describe('BatchImageGuideView generated image presentation', () => {
     await flushPromises()
 
     expect(generateImage).toHaveBeenCalledWith(expect.objectContaining({ size: '2048x1152' }))
+  })
+
+  it('扩图模式会生成透明大画布和遮罩后再调用图片编辑接口', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const source = new File(['source'], 'source.png', { type: 'image/png' })
+    const upload = wrapper.find<HTMLInputElement>('#reference-upload')
+    Object.defineProperty(upload.element, 'files', { configurable: true, value: [source] })
+    await upload.trigger('change')
+    await wrapper.find<HTMLInputElement>('#outpaint-enabled').setValue(true)
+    await wrapper.find('.prompt-input').setValue('向画面两侧延伸山谷和天空')
+    await wrapper.find('.prompt-bar').trigger('submit')
+    await flushPromises()
+
+    expect(createOutpaintFiles).toHaveBeenCalledWith(source, expect.objectContaining({
+      mode: 'ratio',
+      ratio: '3:2',
+      maxEdge: 2048,
+    }))
+    expect(editImage).toHaveBeenCalledWith(expect.objectContaining({
+      image: expect.objectContaining({ name: 'outpaint-source.png' }),
+      mask: expect.objectContaining({ name: 'outpaint-mask.png' }),
+    }))
+    expect(wrapper.find('.task-badge').text()).toContain('扩图')
+  })
+
+  it('Grok 图片模型也会携带扩图画布和遮罩调用编辑接口', async () => {
+    listKeys.mockResolvedValue({
+      items: [{ id: 2, name: 'Grok key', key: 'sk-grok', status: 'active' }],
+    })
+    listImageModels.mockResolvedValue(['grok-imagine-image'])
+    const wrapper = mountView()
+    await flushPromises()
+    const source = new File(['source'], 'grok-source.png', { type: 'image/png' })
+    const upload = wrapper.find<HTMLInputElement>('#reference-upload')
+    Object.defineProperty(upload.element, 'files', { configurable: true, value: [source] })
+    await upload.trigger('change')
+    await wrapper.find<HTMLInputElement>('#outpaint-enabled').setValue(true)
+    await wrapper.find('.prompt-input').setValue('向左右扩展场景')
+    await wrapper.find('.prompt-bar').trigger('submit')
+    await flushPromises()
+
+    expect(editImage).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'grok-imagine-image',
+      image: expect.objectContaining({ name: 'outpaint-source.png' }),
+      mask: expect.objectContaining({ name: 'outpaint-mask.png' }),
+    }))
+  })
+
+  it('扩图面板提供等比、自由和常用比例三种模式', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const source = new File(['source'], 'source.png', { type: 'image/png' })
+    const upload = wrapper.find<HTMLInputElement>('#reference-upload')
+    Object.defineProperty(upload.element, 'files', { configurable: true, value: [source] })
+    await upload.trigger('change')
+    await wrapper.find<HTMLInputElement>('#outpaint-enabled').setValue(true)
+
+    expect(wrapper.findAll('input[name="outpaint-mode"]').map((item) => item.attributes('value'))).toEqual([
+      'scale',
+      'free',
+      'ratio',
+    ])
+    await wrapper.find<HTMLInputElement>('input[name="outpaint-mode"][value="free"]').setValue()
+    await wrapper.find<HTMLInputElement>('#outpaint-top').setValue(96)
+    await wrapper.find<HTMLInputElement>('#outpaint-right').setValue(320)
+    await wrapper.find<HTMLInputElement>('#outpaint-bottom').setValue(160)
+    await wrapper.find<HTMLInputElement>('#outpaint-left').setValue(224)
+    await wrapper.find('.prompt-input').setValue('补全扩展区域')
+    await wrapper.find('.prompt-bar').trigger('submit')
+    await flushPromises()
+
+    expect(createOutpaintFiles).toHaveBeenCalledWith(source, expect.objectContaining({
+      mode: 'free',
+      top: 96,
+      right: 320,
+      bottom: 160,
+      left: 224,
+    }))
+  })
+
+  it('支持把图片拖入参考图区并显示拖拽反馈', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const source = new File(['source'], 'dragged.png', { type: 'image/png' })
+    const uploadBox = wrapper.find('.upload-box')
+
+    await uploadBox.trigger('dragenter', { dataTransfer: { files: [source] } })
+    expect(uploadBox.classes()).toContain('is-dragging')
+
+    await uploadBox.trigger('drop', { dataTransfer: { files: [source] } })
+    expect(uploadBox.classes()).not.toContain('is-dragging')
+    expect(wrapper.find('.upload-box img').exists()).toBe(true)
+  })
+
+  it('可以把当前生成结果直接作为扩图原图', async () => {
+    const wrapper = await generateResult()
+
+    await wrapper.find('.outpaint-result-button').trigger('click')
+    await flushPromises()
+
+    expect((wrapper.find('#outpaint-enabled').element as HTMLInputElement).checked).toBe(true)
+    expect(wrapper.find('.upload-box img').exists()).toBe(true)
+    expect(wrapper.find('.task-badge').text()).toContain('已进入扩图模式')
   })
 
   it('opens base64 results through a browser-safe blob URL', async () => {

@@ -8,6 +8,11 @@ export async function getTokenLeaderboard(date?: string): Promise<TokenLeaderboa
   return data
 }
 
+export async function getRealtimeTokenLeaderboard(): Promise<TokenLeaderboardData> {
+  const { data } = await apiClient.get<TokenLeaderboardData>('/token-leaderboard/realtime')
+  return data
+}
+
 export async function exchangeTokenPoints(points: number): Promise<TokenPointExchangeResult> {
   const { data } = await apiClient.post<TokenPointExchangeResult>('/token-leaderboard/exchange', {
     points,
@@ -21,6 +26,7 @@ export async function exchangeTokenPoints(points: number): Promise<TokenPointExc
 
 export const tokenLeaderboardAPI = {
   get: getTokenLeaderboard,
+  getRealtime: getRealtimeTokenLeaderboard,
   exchange: exchangeTokenPoints,
 }
 

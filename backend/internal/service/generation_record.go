@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyutil"
 	"github.com/tidwall/gjson"
 )
 
@@ -89,7 +91,7 @@ func (s *GenerationRecordService) FinishVideoByUpstream(ctx context.Context, use
 	if isTerminalGenerationStatus(record.Status) {
 		return nil
 	}
-	result, err := s.persistResultFiles(ctx, record.TaskID, payload, status == GenerationStatusCompleted)
+	result, err := s.persistResultFiles(ctx, record.TaskID, accountID, payload, status == GenerationStatusCompleted)
 	if err != nil {
 		if status == GenerationStatusCompleted {
 			status = GenerationStatusSubmitted
@@ -110,7 +112,7 @@ type GenerationRecordService struct {
 	stop          chan struct{}
 	stopOnce      sync.Once
 	poller        GenerationVideoStatusPoller
-	download      func(context.Context, string, string, int) (string, error)
+	download      func(context.Context, int64, string, string, int) (string, error)
 	videoFinishMu sync.Mutex
 }
 
@@ -129,7 +131,9 @@ func NewGenerationRecordService(repo GenerationRecordRepository) *GenerationReco
 	}
 	return &GenerationRecordService{
 		repo: repo, dataDir: filepath.Join(dataDir, "generation-records"), now: time.Now, stop: make(chan struct{}),
-		download: downloadGenerationMedia,
+		download: func(ctx context.Context, _ int64, rawURL, dir string, index int) (string, error) {
+			return downloadGenerationMedia(ctx, rawURL, dir, index)
+		},
 	}
 }
 
@@ -146,6 +150,12 @@ func (s *GenerationRecordService) Start() {
 func (s *GenerationRecordService) SetVideoStatusPoller(poller GenerationVideoStatusPoller) {
 	if s != nil {
 		s.poller = poller
+	}
+}
+
+func (s *GenerationRecordService) SetMediaDownloader(downloader func(context.Context, int64, string, string, int) (string, error)) {
+	if s != nil && downloader != nil {
+		s.download = downloader
 	}
 }
 
@@ -177,7 +187,7 @@ func (s *GenerationRecordService) Finish(ctx context.Context, taskID string, use
 	if s == nil || s.repo == nil {
 		return errors.New("生成记录服务不可用")
 	}
-	result, err := s.persistResultFiles(ctx, taskID, payload, status == GenerationStatusCompleted)
+	result, err := s.persistResultFiles(ctx, taskID, accountID, payload, status == GenerationStatusCompleted)
 	if err != nil && strings.TrimSpace(failure) == "" {
 		failure = err.Error()
 		status = GenerationStatusFailed
@@ -368,7 +378,7 @@ func (s *GenerationRecordService) ContentPath(ctx context.Context, userID int64,
 	return path, nil
 }
 
-func (s *GenerationRecordService) persistResultFiles(ctx context.Context, taskID string, payload []byte, saveRemote bool) (json.RawMessage, error) {
+func (s *GenerationRecordService) persistResultFiles(ctx context.Context, taskID string, accountID int64, payload []byte, saveRemote bool) (json.RawMessage, error) {
 	if len(payload) == 0 {
 		return nil, nil
 	}
@@ -468,10 +478,12 @@ func (s *GenerationRecordService) persistResultFiles(ctx context.Context, taskID
 		var downloadErrors []string
 		downloader := s.download
 		if downloader == nil {
-			downloader = downloadGenerationMedia
+			downloader = func(ctx context.Context, _ int64, rawURL, dir string, index int) (string, error) {
+				return downloadGenerationMedia(ctx, rawURL, dir, index)
+			}
 		}
 		for _, remoteURL := range remoteURLs {
-			name, err := downloader(ctx, remoteURL, filepath.Join(s.dataDir, taskID), len(files))
+			name, err := downloader(ctx, accountID, remoteURL, filepath.Join(s.dataDir, taskID), len(files))
 			if err != nil {
 				remainingURLs = append(remainingURLs, remoteURL)
 				downloadErrors = append(downloadErrors, err.Error())
@@ -491,14 +503,78 @@ func (s *GenerationRecordService) persistResultFiles(ctx context.Context, taskID
 	return json.Marshal(map[string]any{"files": files, "urls": remainingURLs})
 }
 
+type generationMediaDownloadOptions struct {
+	proxyURL string
+	headers  http.Header
+}
+
+type accountGenerationMediaDownloader struct {
+	accountRepo AccountRepository
+	download    func(context.Context, string, string, int, generationMediaDownloadOptions) (string, error)
+}
+
+func NewAccountGenerationMediaDownloader(accountRepo AccountRepository) func(context.Context, int64, string, string, int) (string, error) {
+	downloader := &accountGenerationMediaDownloader{accountRepo: accountRepo, download: downloadGenerationMediaWithOptions}
+	return downloader.Download
+}
+
+func (d *accountGenerationMediaDownloader) Download(ctx context.Context, accountID int64, rawURL, dir string, index int) (string, error) {
+	options := generationMediaDownloadOptions{headers: make(http.Header)}
+	options.headers.Set("Accept", "image/avif,image/webp,image/*,video/*,*/*;q=0.8")
+	if accountID > 0 {
+		if d == nil || d.accountRepo == nil {
+			return "", errors.New("生成媒体下载账号服务不可用")
+		}
+		account, err := d.accountRepo.GetByID(ctx, accountID)
+		if err != nil {
+			return "", fmt.Errorf("读取生成媒体下载账号失败: %w", err)
+		}
+		if account == nil {
+			return "", errors.New("生成媒体下载账号不存在")
+		}
+		if account.ProxyID != nil && account.Proxy != nil {
+			options.proxyURL = account.Proxy.URL()
+		}
+		if account.Platform == PlatformGrok {
+			options.headers.Set("User-Agent", grokUpstreamUserAgent)
+			if account.IsGrokOAuth() {
+				applyGrokCLIHeaders(options.headers)
+			}
+		}
+	}
+	download := downloadGenerationMediaWithOptions
+	if d != nil && d.download != nil {
+		download = d.download
+	}
+	return download(ctx, rawURL, dir, index, options)
+}
+
 func downloadGenerationMedia(ctx context.Context, rawURL, dir string, index int) (string, error) {
+	return downloadGenerationMediaWithOptions(ctx, rawURL, dir, index, generationMediaDownloadOptions{})
+}
+
+func downloadGenerationMediaWithOptions(ctx context.Context, rawURL, dir string, index int, options generationMediaDownloadOptions) (string, error) {
 	parsed, err := validateGenerationMediaURL(rawURL)
 	if err != nil {
 		return "", err
 	}
+	if err := validateGenerationMediaResolvedHost(ctx, parsed.Hostname()); err != nil {
+		return "", err
+	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
-	transport.DialContext = generationMediaDialContext
+	if strings.TrimSpace(options.proxyURL) == "" {
+		transport.DialContext = generationMediaDialContext
+	} else {
+		_, parsedProxy, proxyErr := proxyurl.Parse(options.proxyURL)
+		if proxyErr != nil {
+			return "", fmt.Errorf("生成媒体下载代理无效: %w", proxyErr)
+		}
+		transport.DialContext = nil
+		if proxyErr := proxyutil.ConfigureTransportProxy(transport, parsedProxy); proxyErr != nil {
+			return "", fmt.Errorf("配置生成媒体下载代理失败: %w", proxyErr)
+		}
+	}
 	client := &http.Client{
 		Transport: transport,
 		Timeout:   generationMediaTimeout,
@@ -506,13 +582,21 @@ func downloadGenerationMedia(ctx context.Context, rawURL, dir string, index int)
 			if len(via) >= 3 {
 				return errors.New("生成媒体重定向次数过多")
 			}
-			_, err := validateGenerationMediaURL(req.URL.String())
-			return err
+			redirectURL, err := validateGenerationMediaURL(req.URL.String())
+			if err != nil {
+				return err
+			}
+			return validateGenerationMediaResolvedHost(req.Context(), redirectURL.Hostname())
 		},
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
 		return "", fmt.Errorf("创建生成媒体下载请求失败: %w", err)
+	}
+	for key, values := range options.headers {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -558,6 +642,26 @@ func downloadGenerationMedia(ctx context.Context, rawURL, dir string, index int)
 		return "", err
 	}
 	return name, nil
+}
+
+func validateGenerationMediaResolvedHost(ctx context.Context, host string) error {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return errors.New("生成媒体地址无效")
+	}
+	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return fmt.Errorf("解析生成媒体主机失败: %w", err)
+	}
+	if len(addresses) == 0 {
+		return errors.New("生成媒体主机没有可用地址")
+	}
+	for _, address := range addresses {
+		if !isPublicGenerationMediaIP(address.IP) {
+			return errors.New("生成媒体地址不允许访问私有网络")
+		}
+	}
+	return nil
 }
 
 func validateGenerationMediaURL(rawURL string) (*url.URL, error) {

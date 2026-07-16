@@ -740,6 +740,7 @@ func ProvideTokenLeaderboardService(repo TokenLeaderboardRepository, authCacheIn
 func ProvideGenerationRecordService(repo GenerationRecordRepository, gateway *OpenAIGatewayService, accountRepo AccountRepository) *GenerationRecordService {
 	svc := NewGenerationRecordService(repo)
 	svc.SetVideoStatusPoller(NewGatewayGenerationVideoStatusPoller(gateway, accountRepo))
+	svc.SetMediaDownloader(NewAccountGenerationMediaDownloader(accountRepo))
 	svc.Start()
 	return svc
 }
