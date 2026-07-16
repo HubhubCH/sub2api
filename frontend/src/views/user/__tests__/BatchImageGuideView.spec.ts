@@ -178,6 +178,33 @@ describe('BatchImageGuideView generated image presentation', () => {
     expect((wrapper.find('#image-model').element as HTMLSelectElement).value).toBe('grok-imagine-image')
   })
 
+  it('does not probe an active API key whose bound group is unavailable', async () => {
+    listKeys.mockResolvedValue({
+      items: [
+        { id: 66, name: 'Deleted group key', key: 'sk-deleted-group', group_id: 166, status: 'active' },
+        {
+          id: 72,
+          name: 'Image key',
+          key: 'sk-image',
+          group_id: 172,
+          status: 'active',
+          group: { status: 'active', allow_image_generation: true },
+        },
+      ],
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const keyOptions = wrapper.findAll('#image-api-key option')
+    expect(keyOptions).toHaveLength(2)
+    expect(keyOptions[1]?.text()).toContain('Image key')
+    expect(keyOptions.map((option) => option.text()).join(' ')).not.toContain('Deleted group key')
+    expect((wrapper.find('#image-api-key').element as HTMLSelectElement).value).toBe('72')
+    expect(listImageModels).toHaveBeenCalledTimes(1)
+    expect(listImageModels).toHaveBeenCalledWith('sk-image')
+  })
+
   it('opts generated images out of Edge visual search and does not advertise unsupported resolutions', async () => {
     const wrapper = await generateResult()
 

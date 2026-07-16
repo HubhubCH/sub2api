@@ -763,9 +763,12 @@ function syncResultDimensions(event: Event, resultIndex: number) {
 
 async function loadApiKeys() {
   const response = await keysAPI.list(1, 50, { status: 'active' })
-  apiKeys.value = response.items
-  if (!selectedKeyId.value && response.items.length > 0) {
-    selectedKeyId.value = String(response.items[0].id)
+  apiKeys.value = response.items.filter((key) => (
+    key.group_id == null ||
+    (key.group?.status === 'active' && key.group.allow_image_generation)
+  ))
+  if (!apiKeys.value.some((key) => String(key.id) === selectedKeyId.value)) {
+    selectedKeyId.value = apiKeys.value[0] ? String(apiKeys.value[0].id) : ''
   }
 }
 
