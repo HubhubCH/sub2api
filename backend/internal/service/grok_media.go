@@ -326,24 +326,25 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	if account == nil {
 		return nil, fmt.Errorf("grok account is required")
 	}
-	baseURL := ""
+	var targetURL string
+	var err error
 	switch {
 	case account.Platform == PlatformGrok:
-		baseURL = account.GetGrokMediaBaseURL()
+		targetURL, err = buildGrokMediaURL(account, s.cfg, endpoint, requestID)
 	case account.Platform == PlatformOpenAI && account.IsOpenAIApiKey():
-		baseURL = strings.TrimSpace(account.GetCredential("base_url"))
+		baseURL := strings.TrimSpace(account.GetCredential("base_url"))
 		if baseURL == "" || isOfficialOpenAIAPIHost(baseURL) {
 			return nil, fmt.Errorf("Grok-compatible video account requires a custom base_url")
 		}
+		targetURL, err = endpoint.upstreamURL(baseURL, requestID)
 	default:
 		return nil, fmt.Errorf("account platform %s is not supported for grok media", account.Platform)
 	}
-
-	token, _, err := s.GetAccessToken(ctx, account)
 	if err != nil {
 		return nil, err
 	}
-	targetURL, err := endpoint.upstreamURL(baseURL, requestID)
+
+	token, _, err := s.getRequestCredential(ctx, c, account)
 	if err != nil {
 		return nil, err
 	}
@@ -378,7 +379,9 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	} else {
 		upstreamReq.Header.Set("Accept", "application/json")
 	}
-	applyGrokCLIHeaders(upstreamReq.Header)
+	if account.IsGrokOAuth() {
+		applyGrokCLIHeaders(upstreamReq.Header)
+	}
 	if endpoint.RequiresRequestBody() {
 		contentType = strings.TrimSpace(contentType)
 		if contentType == "" {
@@ -406,7 +409,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	}
 
 	if account.Platform == PlatformGrok {
-		s.updateGrokUsageSnapshot(ctx, account, xai.ParseQuotaHeaders(resp.Header, resp.StatusCode))
+		s.updateGrokUsageFromResponse(ctx, account, resp.Header, resp.StatusCode)
 	}
 	if endpoint == GrokMediaEndpointVideoContent {
 		if err := writeGrokVideoContentResponse(c, resp); err != nil {
@@ -708,6 +711,7 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(
 		return nil, &UpstreamFailoverError{
 			StatusCode:             resp.StatusCode,
 			ResponseBody:           body,
+			ResponseHeaders:        resp.Header.Clone(),
 			RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
 		}
 	}
