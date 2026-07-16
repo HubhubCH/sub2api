@@ -6,6 +6,7 @@
     </div>
     <select
       :value="modelValue"
+      :disabled="disabled"
       class="field-control"
       @change="$emit('update:modelValue', ($event.target as HTMLSelectElement).value)"
     >
@@ -23,6 +24,7 @@ import type { ApiKey } from '@/types'
 defineProps<{
   keys: ApiKey[]
   modelValue: string
+  disabled?: boolean
 }>()
 
 defineEmits<{
@@ -39,7 +41,7 @@ function maskKey(key: string): string {
 <style scoped>
 .creator-key-picker {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .picker-heading {
@@ -63,17 +65,17 @@ function maskKey(key: string): string {
 .field-control {
   width: 100%;
   border: 1px solid #e2e8f0;
-  border-radius: 14px;
+  border-radius: 6px;
   background: #fff;
   color: #0f172a;
   font-size: 14px;
   outline: none;
-  padding: 10px 12px;
+  padding: 9px 10px;
 }
 
 .field-control:focus {
   border-color: #67e8f9;
-  box-shadow: 0 0 0 4px rgba(103, 232, 249, 0.18);
+  box-shadow: 0 0 0 3px rgba(103, 232, 249, 0.18);
 }
 
 :global(.dark) .picker-heading strong {

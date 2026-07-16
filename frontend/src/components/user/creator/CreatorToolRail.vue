@@ -7,6 +7,7 @@
       class="tool-button"
       :class="{ active: tool.id === activeTool }"
       :data-test="`creator-tool-${tool.id}`"
+      :disabled="disabled"
       @click="$emit('select', tool.id)"
     >
       <Icon :name="tool.icon" size="sm" />
@@ -27,6 +28,7 @@ export interface CreatorToolNavItem {
 defineProps<{
   tools: CreatorToolNavItem[]
   activeTool: string
+  disabled?: boolean
 }>()
 
 defineEmits<{
@@ -37,28 +39,32 @@ defineEmits<{
 <style scoped>
 .creator-tool-rail {
   display: grid;
+  height: 100%;
+  min-height: 0;
   align-content: start;
-  gap: 8px;
+  gap: 4px;
+  overflow-y: auto;
   border: 1px solid #e2e8f0;
-  border-radius: 18px;
+  border-radius: 8px;
   background: rgba(255, 255, 255, 0.94);
-  padding: 10px;
+  padding: 8px;
+  scrollbar-gutter: stable;
 }
 
 .tool-button {
   display: flex;
-  min-height: 42px;
+  min-height: 38px;
   width: 100%;
   align-items: center;
   gap: 9px;
   border: 0;
-  border-radius: 12px;
+  border-radius: 6px;
   background: transparent;
   color: #64748b;
   cursor: pointer;
   font-size: 13px;
   font-weight: 720;
-  padding: 0 11px;
+  padding: 0 9px;
   text-align: left;
 }
 
@@ -66,6 +72,11 @@ defineEmits<{
 .tool-button.active {
   background: #ccfbf1;
   color: #0f766e;
+}
+
+.tool-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 :global(.dark) .creator-tool-rail {
@@ -86,7 +97,9 @@ defineEmits<{
 @media (max-width: 760px) {
   .creator-tool-rail {
     display: flex;
+    height: auto;
     overflow-x: auto;
+    overflow-y: hidden;
     padding: 8px;
   }
 

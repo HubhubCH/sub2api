@@ -1,7 +1,7 @@
 <template>
   <AppLayout>
-    <div class="online-creator-page">
-      <CreatorToolRail :tools="tools" :active-tool="activeTool" @select="selectTool" />
+    <div class="online-creator-page" :class="{ 'overview-mode': activeTool === 'home' }">
+      <CreatorToolRail :tools="tools" :active-tool="activeTool" :disabled="submitting" @select="selectTool" />
 
       <main class="creator-workspace">
         <CreatorHomePanel
@@ -26,7 +26,7 @@
             <span>{{ activeToolConfig.badge }}</span>
           </div>
 
-          <CreatorKeyPicker v-model="selectedKeyId" :keys="usableKeys" />
+          <CreatorKeyPicker v-model="selectedKeyId" :keys="usableKeys" :disabled="submitting" />
 
           <div v-if="activeTool === 'assistant'" class="assistant-log">
             <div v-for="message in assistantMessages" :key="message.id" :class="['message-row', message.role]">
@@ -34,13 +34,16 @@
             </div>
           </div>
 
-          <div v-if="modelWarning" class="unsupported-note">{{ modelWarning }}</div>
+          <div v-if="modelWarning" class="unsupported-note">
+            <span>{{ modelWarning }}</span>
+            <button v-if="activeModelLoadError" type="button" data-test="creator-retry-models" @click="loadModelsForSelectedKey">重试</button>
+          </div>
 
           <div class="panel-block">
             <div class="form-grid">
               <label v-if="needsModel" class="field-block">
                 <span>模型</span>
-                <select v-model="selectedModel" class="field-control" :disabled="modelOptions.length === 0">
+                <select v-model="selectedModel" class="field-control" :disabled="submitting || modelOptions.length === 0">
                   <option v-if="modelOptions.length === 0" value="">当前密钥暂无可用模型</option>
                   <option v-for="model in modelOptions" :key="model" :value="model">{{ model }}</option>
                 </select>
@@ -190,12 +193,16 @@
       <CreatorResultPanel
         :output="output"
         :records="records"
+        :record-error="recordLoadError"
         :loading="submitting"
         :error="errorMessage"
         :status="statusMessage"
         @restore="restoreRecord"
         @copy="copyText"
         @download-audio="downloadAudio"
+        @download-batch="downloadBatch"
+        @download-video="downloadVideo"
+        @reload-records="loadRecords"
       />
     </div>
   </AppLayout>
@@ -213,7 +220,7 @@ import CreatorToolRail from '@/components/user/creator/CreatorToolRail.vue'
 import { keysAPI } from '@/api'
 import { generationRecordsAPI, type GenerationRecord } from '@/api/generationRecords'
 import { imageGenerationAPI } from '@/api/imageGeneration'
-import { videoGenerationAPI } from '@/api/videoGeneration'
+import { AGNES_VIDEO_MODEL, videoGenerationAPI, type GatewayVideoProvider } from '@/api/videoGeneration'
 import * as batchImageAPI from '@/api/batchImage'
 import { isUsableCreatorKey, onlineCreatorAPI } from '@/api/onlineCreator'
 import type { ApiKey } from '@/types'
@@ -246,6 +253,17 @@ interface CreatorOutput {
   type: 'text' | 'image' | 'video' | 'audio' | 'batch'
   content: string
   url?: string
+  batchId?: string
+  batchReady?: boolean
+  videoRequestId?: string
+  items?: Array<{
+    id: string
+    label: string
+    status: string
+    url?: string
+    filename?: string
+    error?: string
+  }>
 }
 
 interface AssistantMessage {
@@ -253,6 +271,8 @@ interface AssistantMessage {
   role: 'user' | 'assistant'
   content: string
 }
+
+type CreatorModelCapability = 'text' | 'image' | 'video' | 'batch' | 'transcription' | 'speech'
 
 const tools: CreatorToolConfig[] = [
   { id: 'home', label: '首页', badge: '总览', icon: 'home', action: '进入', placeholder: '' },
@@ -277,7 +297,9 @@ const textModels = ref<string[]>([])
 const imageModels = ref<string[]>([])
 const videoModels = ref<string[]>([])
 const batchModels = ref<string[]>([])
-const audioModels = ref<string[]>([])
+const transcriptionModels = ref<string[]>([])
+const speechModels = ref<string[]>([])
+const modelLoadErrors = ref<Partial<Record<CreatorModelCapability, string>>>({})
 const selectedModel = ref('')
 const targetLanguage = ref('中文')
 const imageSize = ref('1024x1024')
@@ -297,6 +319,7 @@ const batchProductFiles = ref<File[]>([])
 const selectedAudioFile = ref<File | null>(null)
 const output = ref<CreatorOutput | null>(null)
 const records = ref<GenerationRecord[]>([])
+const recordLoadError = ref('')
 const localRecords = ref<CreatorLocalRecord[]>([])
 const assistantMessages = ref<AssistantMessage[]>([])
 const submitting = ref(false)
@@ -304,6 +327,16 @@ const statusMessage = ref('')
 const errorMessage = ref('')
 const audioOutputUrl = ref('')
 let audioOutputBlob: Blob | null = null
+let modelRequestVersion = 0
+let operationVersion = 0
+let videoPollTimer: number | null = null
+let batchPollTimer: number | null = null
+const objectUrls = new Set<string>()
+const batchAPIKeys = new Map<string, string>()
+const videoTasks = new Map<string, { apiKey: string; provider: GatewayVideoProvider; model: string }>()
+const POLL_INTERVAL_MS = 5000
+const MAX_POLL_RETRIES = 3
+const MAX_POLL_ATTEMPTS = 60
 
 const activeToolConfig = computed(() => tools.find((tool) => tool.id === activeTool.value) || tools[0])
 const homeTools = computed(() => tools.filter((tool) => tool.id !== 'home' && tool.id !== 'history'))
@@ -324,7 +357,8 @@ const modelOptions = computed(() => {
   if (isImageTool.value) return imageModels.value
   if (activeTool.value === 'video') return videoModels.value
   if (activeTool.value === 'batch-main' || activeTool.value === 'batch-clone') return batchModels.value
-  if (isAudioTool.value) return audioModels.value
+  if (activeTool.value === 'transcription') return transcriptionModels.value
+  if (activeTool.value === 'speech') return speechModels.value
   return []
 })
 const promptLabel = computed(() => {
@@ -333,9 +367,21 @@ const promptLabel = computed(() => {
   if (activeTool.value === 'batch-main' || activeTool.value === 'batch-clone') return '统一要求'
   return '创作提示词'
 })
+const activeModelLoadError = computed(() => {
+  let capability: CreatorModelCapability | null = null
+  if (isTextTool.value) capability = 'text'
+  else if (isImageTool.value) capability = 'image'
+  else if (activeTool.value === 'video') capability = 'video'
+  else if (activeTool.value === 'batch-main' || activeTool.value === 'batch-clone') capability = 'batch'
+  else if (activeTool.value === 'transcription') capability = 'transcription'
+  else if (activeTool.value === 'speech') capability = 'speech'
+  return capability ? modelLoadErrors.value[capability] || '' : ''
+})
 const modelWarning = computed(() => {
   if (!selectedApiKey.value) return '请先选择可用 API 密钥。'
-  if (isAudioTool.value && audioModels.value.length === 0) return '当前密钥暂无可用音频兼容模型，检测到 audio/realtime/tts/asr/transcribe 等模型后会自动启用。'
+  if (activeModelLoadError.value) return `模型加载失败：${activeModelLoadError.value}`
+  if (activeTool.value === 'transcription' && transcriptionModels.value.length === 0) return '当前密钥暂无可用转写模型。'
+  if (activeTool.value === 'speech' && speechModels.value.length === 0) return '当前密钥暂无可用配音模型。'
   if (needsModel.value && modelOptions.value.length === 0) return '当前密钥暂无该工具可用模型。'
   return ''
 })
@@ -370,6 +416,10 @@ const recentItems = computed<CreatorRecentItem[]>(() => {
 })
 
 function selectTool(toolId: string) {
+  if (submitting.value) return
+  operationVersion += 1
+  clearPollingTimers()
+  releaseObjectUrls()
   activeTool.value = toolId as CreatorToolId
   errorMessage.value = ''
   statusMessage.value = ''
@@ -441,26 +491,40 @@ function imageOutputFromResponse(response: unknown): CreatorOutput {
 
 async function loadModelsForSelectedKey() {
   const apiKey = selectedApiKey.value?.key
+  const requestVersion = ++modelRequestVersion
   textModels.value = []
   imageModels.value = []
   videoModels.value = []
   batchModels.value = []
-  audioModels.value = []
+  transcriptionModels.value = []
+  speechModels.value = []
+  modelLoadErrors.value = {}
   selectedModel.value = ''
   if (!apiKey) return
 
-  const [texts, images, videos, batches, audios] = await Promise.allSettled([
+  const [texts, images, videos, batches, transcriptions, speeches] = await Promise.allSettled([
     onlineCreatorAPI.listTextModels(apiKey),
     imageGenerationAPI.listImageModels(apiKey),
     videoGenerationAPI.listVideoModels(apiKey),
     batchImageAPI.listBatchImageModels(apiKey),
-    onlineCreatorAPI.listAudioModels(apiKey),
+    onlineCreatorAPI.listTranscriptionModels(apiKey),
+    onlineCreatorAPI.listSpeechModels(apiKey),
   ])
+  if (requestVersion !== modelRequestVersion || selectedApiKey.value?.key !== apiKey) return
   textModels.value = texts.status === 'fulfilled' ? texts.value : []
   imageModels.value = images.status === 'fulfilled' ? images.value : []
   videoModels.value = videos.status === 'fulfilled' ? videos.value : []
   batchModels.value = batches.status === 'fulfilled' ? batches.value.data.map((item) => item.id) : []
-  audioModels.value = audios.status === 'fulfilled' ? audios.value : []
+  transcriptionModels.value = transcriptions.status === 'fulfilled' ? transcriptions.value : []
+  speechModels.value = speeches.status === 'fulfilled' ? speeches.value : []
+  const errors: Partial<Record<CreatorModelCapability, string>> = {}
+  if (texts.status === 'rejected') errors.text = extractErrorMessage(texts.reason, '文本模型加载失败')
+  if (images.status === 'rejected') errors.image = extractErrorMessage(images.reason, '图片模型加载失败')
+  if (videos.status === 'rejected') errors.video = extractErrorMessage(videos.reason, '视频模型加载失败')
+  if (batches.status === 'rejected') errors.batch = extractErrorMessage(batches.reason, '批量模型加载失败')
+  if (transcriptions.status === 'rejected') errors.transcription = extractErrorMessage(transcriptions.reason, '转写模型加载失败')
+  if (speeches.status === 'rejected') errors.speech = extractErrorMessage(speeches.reason, '配音模型加载失败')
+  modelLoadErrors.value = errors
   syncSelectedModel()
 }
 
@@ -475,8 +539,9 @@ async function loadApiKeys() {
 async function loadRecords() {
   try {
     records.value = await generationRecordsAPI.list(8)
-  } catch {
-    records.value = []
+    recordLoadError.value = ''
+  } catch (error) {
+    recordLoadError.value = extractErrorMessage(error, '创作记录加载失败')
   }
 }
 
@@ -487,18 +552,23 @@ function addLocalRecord(record: Omit<CreatorLocalRecord, 'id'>) {
 async function submitAssistant(apiKey: string) {
   const userMessage: AssistantMessage = { id: `user-${Date.now()}`, role: 'user', content: prompt.value }
   assistantMessages.value.push(userMessage)
-  const result = await onlineCreatorAPI.createTextCompletion({
-    apiKey,
-    model: selectedModel.value,
-    mode: 'chat',
-    prompt: assistantMessages.value.map((message) => `${message.role === 'user' ? '用户' : '助手'}：${message.content}`).join('\n'),
-    targetLanguage: targetLanguage.value,
-  })
-  assistantMessages.value.push({ id: `assistant-${Date.now()}`, role: 'assistant', content: result.content })
-  output.value = { type: 'text', content: result.content }
-  addLocalRecord({ title: 'AI 助手', kind: '文本', preview: prompt.value, content: result.content, outputType: 'text' })
-  prompt.value = ''
-  statusMessage.value = '回复已生成'
+  try {
+    const result = await onlineCreatorAPI.createTextCompletion({
+      apiKey,
+      model: selectedModel.value,
+      mode: 'chat',
+      prompt: assistantMessages.value.map((message) => `${message.role === 'user' ? '用户' : '助手'}：${message.content}`).join('\n'),
+      targetLanguage: targetLanguage.value,
+    })
+    assistantMessages.value.push({ id: `assistant-${Date.now()}`, role: 'assistant', content: result.content })
+    output.value = { type: 'text', content: result.content }
+    addLocalRecord({ title: 'AI 助手', kind: '文本', preview: prompt.value, content: result.content, outputType: 'text' })
+    prompt.value = ''
+    statusMessage.value = '回复已生成'
+  } catch (error) {
+    assistantMessages.value = assistantMessages.value.filter((message) => message.id !== userMessage.id)
+    throw error
+  }
 }
 
 async function submitProductCopy(apiKey: string) {
@@ -546,64 +616,172 @@ async function submitEdit(apiKey: string) {
   statusMessage.value = activeTool.value === 'image-translate' ? '图片文字已本地化' : '图片编辑完成'
 }
 
-async function submitBatch(apiKey: string) {
-  const referenceImages = referenceImageFile.value
-    ? [await fileToBatchReference(referenceImageFile.value)]
+async function submitBatch(apiKey: string, toolId: 'batch-main' | 'batch-clone', version: number) {
+  const referenceFile = referenceImageFile.value
+  const productFiles = [...batchProductFiles.value]
+  const taskPrompt = prompt.value
+  const taskImageSize = imageSize.value
+  const taskModel = selectedModel.value || batchModels.value[0]
+  const referenceImages = referenceFile
+    ? [await fileToBatchReference(referenceFile)]
     : []
-  const items = await Promise.all(batchProductFiles.value.map(async (file, index) => ({
+  const items = await Promise.all(productFiles.map(async (file, index) => ({
     custom_id: `creator-${Date.now()}-${index + 1}`,
-    prompt: `${prompt.value || '生成电商商品主图'}\n商品图：${file.name}`,
+    prompt: `${taskPrompt || '生成电商商品主图'}\n商品图：${file.name}`,
     output_count: 1,
     reference_images: [
       ...(referenceImages.length ? referenceImages : []),
       await fileToBatchReference(file),
     ],
   })))
+  if (version !== operationVersion) return
+  const idempotencyKey = `${toolId}-${Date.now()}`
   try {
     const job = await batchImageAPI.submitBatchImageJob(apiKey, {
-      model: selectedModel.value || batchModels.value[0],
-      task_name: `${activeTool.value}-${Date.now()}`,
-      image_size: imageSize.value === '1024x1024' ? '1K' : '2K',
+      model: taskModel,
+      task_name: idempotencyKey,
+      image_size: taskImageSize === '1024x1024' ? '1K' : '2K',
       aspect_ratio: '1:1',
       items,
-      metadata: { source: 'online-creator', tool: activeTool.value },
-    }, `${activeTool.value}-${Date.now()}`)
+      metadata: { source: 'online-creator', tool: toolId },
+    }, idempotencyKey)
+    batchAPIKeys.set(job.id, apiKey)
     output.value = {
       type: 'batch',
       content: `批量任务已提交：${job.id}\n状态：${job.status}\n数量：${job.item_count}`,
+      batchId: job.id,
+      batchReady: false,
     }
     statusMessage.value = '批量任务已提交'
+    scheduleBatchPoll(apiKey, job.id, version)
   } catch (error) {
-    if (activeTool.value !== 'batch-clone') throw error
-    await fallbackBatchCloneWithImageEdits(apiKey, error)
+    if (version !== operationVersion) return
+    if (toolId !== 'batch-clone' || !referenceFile || !isExplicitBatchUnsupported(error)) throw error
+    await fallbackBatchCloneWithImageEdits(apiKey, error, referenceFile, productFiles, taskPrompt, taskImageSize, version)
   }
 }
 
-async function fallbackBatchCloneWithImageEdits(apiKey: string, cause: unknown) {
+function isExplicitBatchUnsupported(error: unknown): boolean {
+  const record = error && typeof error === 'object' ? error as { status?: unknown; message?: unknown } : null
+  const status = Number(record?.status || 0)
+  if ([404, 405, 501].includes(status)) return true
+  if (![400, 422].includes(status)) return false
+  return /(reference|参考图|not supported|unsupported|不支持)/i.test(String(record?.message || ''))
+}
+
+async function fallbackBatchCloneWithImageEdits(
+  apiKey: string,
+  cause: unknown,
+  referenceFile: File,
+  productFiles: File[],
+  taskPrompt: string,
+  taskImageSize: string,
+  version: number,
+) {
   const lines: string[] = [`批量接口不可用，已改用逐张图片编辑。原因：${extractErrorMessage(cause, '批量接口提交失败')}`]
-  for (const [index, file] of batchProductFiles.value.entries()) {
+  const outputItems: NonNullable<CreatorOutput['items']> = []
+  for (const [index, file] of productFiles.entries()) {
+    if (version !== operationVersion) return
     try {
+      const composite = await createCloneComposite(referenceFile, file, index)
+      if (version !== operationVersion) return
       const response = await imageGenerationAPI.editImage({
         apiKey,
         model: imageModels.value[0] || selectedModel.value,
-        prompt: `按参考图风格和统一要求克隆商品主图。参考图：${referenceImageFile.value?.name || '已上传参考图'}。统一要求：${prompt.value || '保持电商主图质感'}`,
-        size: imageSize.value,
+        prompt: `合成图左侧是参考图、右侧是商品图。请按左侧构图与风格克隆右侧商品主图，只输出右侧商品。统一要求：${taskPrompt || '保持电商主图质感'}`,
+        size: taskImageSize,
         quality: 'high',
         count: 1,
         outputFormat: 'png',
-        image: file,
+        image: composite,
       })
-      imageOutputFromResponse(response)
+      if (version !== operationVersion) return
+      const result = imageOutputFromResponse(response)
       lines.push(`第 ${index + 1} 张：成功`)
+      outputItems.push({ id: `fallback-${index + 1}`, label: file.name, status: 'completed', url: result.url, filename: `clone-${index + 1}.png` })
     } catch (itemError) {
-      lines.push(`第 ${index + 1} 张：失败，${extractErrorMessage(itemError, '图片编辑失败')}`)
+      if (version !== operationVersion) return
+      const message = extractErrorMessage(itemError, '图片编辑失败')
+      lines.push(`第 ${index + 1} 张：失败，${message}`)
+      outputItems.push({ id: `fallback-${index + 1}`, label: file.name, status: 'failed', error: message })
     }
   }
-  output.value = { type: 'batch', content: lines.join('\n') }
+  if (version !== operationVersion) return
+  output.value = { type: 'batch', content: lines.join('\n'), items: outputItems }
   statusMessage.value = '已完成逐张兜底处理'
 }
 
-async function submitWatermark(apiKey: string) {
+function scheduleBatchPoll(apiKey: string, batchId: string, version: number, attempt = 0, retryCount = 0) {
+  if (batchPollTimer !== null) window.clearTimeout(batchPollTimer)
+  batchPollTimer = window.setTimeout(() => {
+    batchPollTimer = null
+    void pollBatchStatus(apiKey, batchId, version, attempt, retryCount)
+  }, POLL_INTERVAL_MS)
+}
+
+async function pollBatchStatus(apiKey: string, batchId: string, version: number, attempt: number, retryCount: number) {
+  if (version !== operationVersion) return
+  if (attempt >= MAX_POLL_ATTEMPTS) {
+    errorMessage.value = '批量任务查询超时，请稍后从创作记录恢复'
+    statusMessage.value = ''
+    return
+  }
+  try {
+    const job = await batchImageAPI.getBatchImageJob(apiKey, batchId)
+    if (version !== operationVersion) return
+    output.value = {
+      type: 'batch',
+      batchId,
+      batchReady: false,
+      content: `批量任务：${batchId}\n状态：${job.status}\n成功：${job.success_count || 0}，失败：${job.fail_count || 0}`,
+      items: output.value?.type === 'batch' ? output.value.items : undefined,
+    }
+    if (['completed', 'failed', 'cancelled', 'output_deleted'].includes(job.status)) {
+      statusMessage.value = job.status === 'completed' ? '批量任务已完成' : `批量任务已结束：${job.status}`
+      if (job.status === 'completed') await loadBatchItems(apiKey, batchId, version)
+      return
+    }
+    statusMessage.value = `批量任务处理中：${job.status}`
+    if (attempt + 1 >= MAX_POLL_ATTEMPTS) {
+      errorMessage.value = '批量任务查询超时，请稍后从创作记录恢复'
+      statusMessage.value = ''
+      return
+    }
+    scheduleBatchPoll(apiKey, batchId, version, attempt + 1)
+  } catch (error) {
+    if (version !== operationVersion) return
+    if (retryCount < MAX_POLL_RETRIES && attempt + 1 < MAX_POLL_ATTEMPTS) {
+      statusMessage.value = `批量任务状态查询重试中（${retryCount + 1}/${MAX_POLL_RETRIES}）`
+      scheduleBatchPoll(apiKey, batchId, version, attempt + 1, retryCount + 1)
+      return
+    }
+    errorMessage.value = extractErrorMessage(error, '批量任务状态查询失败')
+    statusMessage.value = ''
+  }
+}
+
+async function loadBatchItems(apiKey: string, batchId: string, version: number) {
+  const response = await batchImageAPI.listBatchImageItems(apiKey, batchId)
+  const items = await Promise.all(response.data.map(async (item, index) => {
+    const result: NonNullable<CreatorOutput['items']>[number] = {
+      id: item.custom_id,
+      label: item.custom_id || `第 ${index + 1} 项`,
+      status: item.status,
+    }
+    if (item.error?.message) result.error = item.error.message
+    if (item.status === 'completed' && item.image_count > 0) {
+      const blob = await batchImageAPI.getBatchImageItemContent(apiKey, batchId, item.custom_id, 0)
+      if (version !== operationVersion) return result
+      result.url = createTrackedObjectURL(blob)
+      result.filename = `${item.custom_id}.${item.file_extension || 'png'}`
+    }
+    return result
+  }))
+  if (version !== operationVersion) return
+  output.value = { type: 'batch', batchId, batchReady: true, content: `批量任务 ${batchId} 已完成`, items }
+}
+
+async function submitWatermark(apiKey: string, version: number) {
   if (!selectedImageFile.value) throw new Error('请先上传图片')
   if (watermarkMode.value === 'remove') {
     output.value = imageOutputFromResponse(await imageGenerationAPI.editImage({
@@ -622,26 +800,87 @@ async function submitWatermark(apiKey: string) {
   const blob = watermarkMode.value === 'text'
     ? await renderTextWatermark(selectedImageFile.value, watermarkText.value)
     : await renderLogoWatermark(selectedImageFile.value, logoFile.value)
-  const url = URL.createObjectURL(blob)
+  if (version !== operationVersion) return
+  const url = createTrackedObjectURL(blob)
   output.value = { type: 'image', url, content: '水印图片已生成' }
-  statusMessage.value = '水印已添加，可右键或打开图片下载'
+  statusMessage.value = '水印已添加，可直接下载'
 }
 
-async function submitVideo(apiKey: string) {
+async function submitVideo(apiKey: string, version: number) {
+  const model = selectedModel.value
+  const provider: GatewayVideoProvider = model === AGNES_VIDEO_MODEL || model.toLowerCase().includes('agnes') ? 'agnes' : 'grok'
   const data = await videoGenerationAPI.generateVideo({
     apiKey,
-    provider: 'grok',
+    provider,
     prompt: prompt.value,
-    model: selectedModel.value,
+    model,
     duration: videoDuration.value,
     aspectRatio: '16:9',
     size: '1280x720',
     width: 1280,
     height: 720,
   })
+  if (version !== operationVersion) return
   const videoUrl = data.video?.url || data.url
-  output.value = { type: 'video', url: videoUrl, content: `视频任务已提交：${data.request_id || data.id || '未返回任务 ID'}` }
-  statusMessage.value = '视频任务已提交'
+  const requestId = data.request_id || data.id
+  if (requestId) videoTasks.set(requestId, { apiKey, provider, model })
+  output.value = { type: 'video', url: videoUrl, videoRequestId: requestId, content: `视频任务已提交：${requestId || '未返回任务 ID'}` }
+  if (videoUrl || ['completed', 'succeeded', 'success', 'done'].includes(String(data.status || '').toLowerCase())) {
+    statusMessage.value = '视频已生成'
+    return
+  }
+  if (!requestId) throw new Error('视频接口未返回任务 ID')
+  statusMessage.value = '视频任务处理中'
+  scheduleVideoPoll(apiKey, requestId, provider, model, version)
+}
+
+function scheduleVideoPoll(apiKey: string, requestId: string, provider: GatewayVideoProvider, model: string, version: number, attempt = 0, retryCount = 0) {
+  if (videoPollTimer !== null) window.clearTimeout(videoPollTimer)
+  videoPollTimer = window.setTimeout(() => {
+    videoPollTimer = null
+    void pollVideoStatus(apiKey, requestId, provider, model, version, attempt, retryCount)
+  }, POLL_INTERVAL_MS)
+}
+
+async function pollVideoStatus(apiKey: string, requestId: string, provider: GatewayVideoProvider, model: string, version: number, attempt: number, retryCount: number) {
+  if (version !== operationVersion) return
+  if (attempt >= MAX_POLL_ATTEMPTS) {
+    errorMessage.value = '视频任务查询超时，请稍后从创作记录恢复'
+    statusMessage.value = ''
+    return
+  }
+  try {
+    const data = await videoGenerationAPI.getVideoStatus(apiKey, requestId, provider, model)
+    if (version !== operationVersion) return
+    const status = String(data.status || 'processing').toLowerCase()
+    const videoUrl = data.video?.url || data.url
+    output.value = { type: 'video', url: videoUrl, videoRequestId: requestId, content: `视频任务 ${requestId}：${status}` }
+    if (['completed', 'succeeded', 'success', 'done'].includes(status)) {
+      statusMessage.value = '视频已生成'
+      return
+    }
+    if (['failed', 'cancelled', 'canceled', 'error', 'expired'].includes(status)) {
+      errorMessage.value = extractErrorMessage(data.error, '视频生成失败')
+      statusMessage.value = ''
+      return
+    }
+    statusMessage.value = `视频生成中：${status}`
+    if (attempt + 1 >= MAX_POLL_ATTEMPTS) {
+      errorMessage.value = '视频任务查询超时，请稍后从创作记录恢复'
+      statusMessage.value = ''
+      return
+    }
+    scheduleVideoPoll(apiKey, requestId, provider, model, version, attempt + 1)
+  } catch (error) {
+    if (version !== operationVersion) return
+    if (retryCount < MAX_POLL_RETRIES && attempt + 1 < MAX_POLL_ATTEMPTS) {
+      statusMessage.value = `视频状态查询重试中（${retryCount + 1}/${MAX_POLL_RETRIES}）`
+      scheduleVideoPoll(apiKey, requestId, provider, model, version, attempt + 1, retryCount + 1)
+      return
+    }
+    errorMessage.value = extractErrorMessage(error, '视频状态查询失败')
+    statusMessage.value = ''
+  }
 }
 
 async function submitTranscription(apiKey: string) {
@@ -657,7 +896,7 @@ async function submitTranscription(apiKey: string) {
   statusMessage.value = '转写完成'
 }
 
-async function submitSpeech(apiKey: string) {
+async function submitSpeech(apiKey: string, version: number) {
   const result = await onlineCreatorAPI.synthesizeCreatorSpeech({
     apiKey,
     model: selectedModel.value,
@@ -667,31 +906,35 @@ async function submitSpeech(apiKey: string) {
     voice: speechVoice.value,
     format: 'mp3',
   })
-  releaseAudioOutput()
+  if (version !== operationVersion) return
   audioOutputBlob = result.blob
-  audioOutputUrl.value = URL.createObjectURL(result.blob)
+  audioOutputUrl.value = createTrackedObjectURL(result.blob)
   output.value = { type: 'audio', url: audioOutputUrl.value, content: result.transcript || prompt.value }
-  addLocalRecord({ title: 'AI 配音', kind: '音频', preview: prompt.value.slice(0, 60), content: result.transcript || prompt.value, outputType: 'audio', url: audioOutputUrl.value })
+  addLocalRecord({ title: 'AI 配音', kind: '音频', preview: prompt.value.slice(0, 60), content: result.transcript || prompt.value, outputType: 'audio', blob: result.blob })
   statusMessage.value = '配音已生成'
 }
 
 async function handleSubmit() {
   if (!canSubmit.value || !selectedApiKey.value) return
+  clearPollingTimers()
+  releaseObjectUrls()
+  const version = ++operationVersion
+  const toolId = activeTool.value
+  const apiKey = selectedApiKey.value.key
   submitting.value = true
   errorMessage.value = ''
   statusMessage.value = '正在请求网关'
   output.value = null
   try {
-    const apiKey = selectedApiKey.value.key
-    if (activeTool.value === 'assistant') await submitAssistant(apiKey)
-    else if (activeTool.value === 'product-copy') await submitProductCopy(apiKey)
-    else if (activeTool.value === 'image') await submitImage(apiKey)
-    else if (activeTool.value === 'edit' || activeTool.value === 'image-translate') await submitEdit(apiKey)
-    else if (activeTool.value === 'batch-main' || activeTool.value === 'batch-clone') await submitBatch(apiKey)
-    else if (activeTool.value === 'watermark') await submitWatermark(apiKey)
-    else if (activeTool.value === 'video') await submitVideo(apiKey)
-    else if (activeTool.value === 'transcription') await submitTranscription(apiKey)
-    else if (activeTool.value === 'speech') await submitSpeech(apiKey)
+    if (toolId === 'assistant') await submitAssistant(apiKey)
+    else if (toolId === 'product-copy') await submitProductCopy(apiKey)
+    else if (toolId === 'image') await submitImage(apiKey)
+    else if (toolId === 'edit' || toolId === 'image-translate') await submitEdit(apiKey)
+    else if (toolId === 'batch-main' || toolId === 'batch-clone') await submitBatch(apiKey, toolId, version)
+    else if (toolId === 'watermark') await submitWatermark(apiKey, version)
+    else if (toolId === 'video') await submitVideo(apiKey, version)
+    else if (toolId === 'transcription') await submitTranscription(apiKey)
+    else if (toolId === 'speech') await submitSpeech(apiKey, version)
     await loadRecords()
   } catch (error) {
     errorMessage.value = extractErrorMessage(error, '创作失败，请检查密钥、模型或参数')
@@ -701,19 +944,38 @@ async function handleSubmit() {
   }
 }
 
-function restoreRecord(record: GenerationRecord) {
-  const url = record.result?.urls?.[0]
-  if (url && record.media_type === 'image') output.value = { type: 'image', url, content: record.prompt_preview || '已从创作记录恢复图片' }
-  else if (url && record.media_type === 'video') output.value = { type: 'video', url, content: record.prompt_preview || '已从创作记录恢复视频' }
-  else output.value = { type: 'text', content: record.prompt_preview || '该记录没有可直接展示的结果' }
-  statusMessage.value = '已从创作记录恢复'
-  errorMessage.value = ''
+async function restoreRecord(record: GenerationRecord) {
+  clearPollingTimers()
+  releaseObjectUrls()
+  const version = ++operationVersion
+  try {
+    let url = record.result?.urls?.[0]
+    if (!url && record.result?.files?.length) {
+      const blob = await generationRecordsAPI.content(record.task_id, 0)
+      if (version !== operationVersion) return
+      url = createTrackedObjectURL(blob)
+    }
+    if (version !== operationVersion) return
+    if (url && record.media_type === 'image') output.value = { type: 'image', url, content: record.prompt_preview || '已从创作记录恢复图片' }
+    else if (url && record.media_type === 'video') output.value = { type: 'video', url, content: record.prompt_preview || '已从创作记录恢复视频' }
+    else output.value = { type: 'text', content: record.prompt_preview || '该记录没有可直接展示的结果' }
+    statusMessage.value = '已从创作记录恢复'
+    errorMessage.value = ''
+  } catch (error) {
+    if (version !== operationVersion) return
+    errorMessage.value = extractErrorMessage(error, '创作记录内容读取失败')
+  }
 }
 
 function restoreLocalRecord(record: CreatorLocalRecord) {
-  output.value = record.outputType === 'audio'
-    ? { type: 'audio', url: record.url, content: record.content }
-    : { type: 'text', content: record.content }
+  releaseObjectUrls()
+  if (record.outputType === 'audio' && record.blob) {
+    audioOutputBlob = record.blob
+    audioOutputUrl.value = createTrackedObjectURL(record.blob)
+    output.value = { type: 'audio', url: audioOutputUrl.value, content: record.content }
+  } else {
+    output.value = { type: 'text', content: record.content }
+  }
   statusMessage.value = '已从本地记录恢复'
   errorMessage.value = ''
 }
@@ -733,12 +995,72 @@ function downloadAudio() {
   document.body.removeChild(link)
 }
 
-function releaseAudioOutput() {
-  if (audioOutputUrl.value) {
-    URL.revokeObjectURL(audioOutputUrl.value)
-    audioOutputUrl.value = ''
+async function downloadBatch(batchId: string) {
+  const apiKey = batchAPIKeys.get(batchId) || selectedApiKey.value?.key
+  if (!apiKey) return
+  try {
+    const blob = await batchImageAPI.downloadBatchImageZip(apiKey, batchId)
+    batchImageAPI.saveBlob(blob, `${batchId}.zip`)
+  } catch (error) {
+    errorMessage.value = extractErrorMessage(error, '批量图片下载失败')
   }
+}
+
+async function downloadVideo(requestId: string) {
+  const task = videoTasks.get(requestId)
+  if (!task) {
+    errorMessage.value = '缺少视频任务上下文，请重新查询或生成视频后再下载'
+    return
+  }
+  try {
+    const blob = await videoGenerationAPI.downloadVideoContent(task.apiKey, requestId, task.provider, task.model)
+    batchImageAPI.saveBlob(blob, `${requestId}.mp4`)
+  } catch (error) {
+    errorMessage.value = extractErrorMessage(error, '视频下载失败')
+  }
+}
+
+function createTrackedObjectURL(blob: Blob): string {
+  const url = URL.createObjectURL(blob)
+  objectUrls.add(url)
+  return url
+}
+
+function releaseObjectUrls() {
+  for (const url of objectUrls) URL.revokeObjectURL(url)
+  objectUrls.clear()
+  audioOutputUrl.value = ''
   audioOutputBlob = null
+}
+
+function clearPollingTimers() {
+  if (videoPollTimer !== null) window.clearTimeout(videoPollTimer)
+  if (batchPollTimer !== null) window.clearTimeout(batchPollTimer)
+  videoPollTimer = null
+  batchPollTimer = null
+}
+
+async function createCloneComposite(referenceFile: File, productFile: File, index: number): Promise<File> {
+  const [referenceImage, productImage] = await Promise.all([
+    loadImageElement(referenceFile),
+    loadImageElement(productFile),
+  ])
+  const referenceWidth = referenceImage.naturalWidth || referenceImage.width
+  const referenceHeight = referenceImage.naturalHeight || referenceImage.height
+  const productWidth = productImage.naturalWidth || productImage.width
+  const productHeight = productImage.naturalHeight || productImage.height
+  const panelHeight = Math.max(referenceHeight, productHeight)
+  const referencePanelWidth = Math.max(1, Math.round(referenceWidth * (panelHeight / referenceHeight)))
+  const productPanelWidth = Math.max(1, Math.round(productWidth * (panelHeight / productHeight)))
+  const canvas = document.createElement('canvas')
+  canvas.width = referencePanelWidth + productPanelWidth
+  canvas.height = panelHeight
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('当前浏览器不支持参考图合成')
+  ctx.drawImage(referenceImage, 0, 0, referencePanelWidth, panelHeight)
+  ctx.drawImage(productImage, referencePanelWidth, 0, productPanelWidth, panelHeight)
+  const blob = await canvasToBlob(canvas)
+  return new File([blob], `clone-composite-${index + 1}.png`, { type: 'image/png' })
 }
 
 async function fileToBatchReference(file: File): Promise<batchImageAPI.BatchImageReferenceImage> {
@@ -832,11 +1154,14 @@ watch(watermarkMode, syncSelectedModel)
 
 onMounted(async () => {
   await loadApiKeys()
-  await Promise.all([loadModelsForSelectedKey(), loadRecords()])
+  await loadRecords()
 })
 
 onBeforeUnmount(() => {
-  releaseAudioOutput()
+  operationVersion += 1
+  modelRequestVersion += 1
+  clearPollingTimers()
+  releaseObjectUrls()
 })
 </script>
 
@@ -844,12 +1169,14 @@ onBeforeUnmount(() => {
 .online-creator-page {
   width: 100%;
   max-width: 1760px;
-  min-height: calc(100vh - 128px);
+  height: calc(100dvh - 64px - 4rem);
+  min-height: 620px;
   margin: 0 auto;
   display: grid;
-  grid-template-columns: minmax(168px, 210px) minmax(420px, 1fr) minmax(300px, 380px);
-  align-items: start;
-  gap: 16px;
+  grid-template-columns: 160px minmax(340px, 420px) minmax(360px, 1fr);
+  align-items: stretch;
+  gap: 12px;
+  overflow: hidden;
 }
 
 .creator-workspace,
@@ -857,18 +1184,35 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
+.creator-workspace,
+.online-creator-page > :deep(.creator-result-panel) {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.online-creator-page.overview-mode .creator-workspace {
+  grid-column: 2 / -1;
+}
+
+.online-creator-page.overview-mode > :deep(.creator-result-panel) {
+  display: none;
+}
+
 .creator-form-card {
   display: grid;
-  gap: 14px;
+  min-height: 100%;
+  align-content: start;
+  gap: 12px;
   border: 1px solid #e2e8f0;
-  border-radius: 18px;
+  border-radius: 8px;
   background: rgba(255, 255, 255, 0.94);
-  padding: 18px;
+  padding: 14px;
 }
 
 .tool-title {
   display: flex;
-  min-height: 52px;
+  min-height: 42px;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -877,7 +1221,7 @@ onBeforeUnmount(() => {
 .tool-title h1 {
   margin: 0;
   color: #0f172a;
-  font-size: 22px;
+  font-size: 19px;
   font-weight: 820;
 }
 
@@ -887,23 +1231,23 @@ onBeforeUnmount(() => {
   color: #0f766e;
   font-size: 12px;
   font-weight: 780;
-  padding: 7px 12px;
+  padding: 5px 9px;
 }
 
 .panel-block {
   border-top: 1px solid #edf1f5;
-  padding-top: 14px;
+  padding-top: 12px;
 }
 
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 10px;
 }
 
 .field-block {
   display: grid;
-  gap: 7px;
+  gap: 6px;
 }
 
 .field-block > span {
@@ -916,39 +1260,39 @@ onBeforeUnmount(() => {
 .prompt-input {
   width: 100%;
   border: 1px solid #e2e8f0;
-  border-radius: 14px;
+  border-radius: 6px;
   background: #fff;
   color: #0f172a;
   font-size: 14px;
   outline: none;
-  padding: 11px 12px;
+  padding: 9px 10px;
 }
 
 .field-control:focus,
 .prompt-input:focus {
   border-color: #67e8f9;
-  box-shadow: 0 0 0 4px rgba(103, 232, 249, 0.18);
+  box-shadow: 0 0 0 3px rgba(103, 232, 249, 0.18);
 }
 
 .textarea-control,
 .prompt-input {
-  min-height: 118px;
+  min-height: 104px;
   resize: vertical;
   line-height: 1.65;
 }
 
 .upload-box {
   display: grid;
-  min-height: 98px;
+  min-height: 78px;
   place-items: center;
   border: 1px dashed #cbd5e1;
-  border-radius: 16px;
+  border-radius: 6px;
   background: #f8fafc;
   color: #64748b;
   cursor: pointer;
   font-size: 13px;
   font-weight: 720;
-  padding: 14px;
+  padding: 12px;
   text-align: center;
 }
 
@@ -961,14 +1305,27 @@ onBeforeUnmount(() => {
 }
 
 .unsupported-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   border: 1px solid #fed7aa;
-  border-radius: 14px;
+  border-radius: 6px;
   background: #fff7ed;
   color: #c2410c;
   font-size: 13px;
   font-weight: 700;
   line-height: 1.6;
-  padding: 12px 14px;
+  padding: 10px 12px;
+}
+
+.unsupported-note button {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-weight: 760;
 }
 
 .assistant-log {
@@ -977,7 +1334,7 @@ onBeforeUnmount(() => {
   overflow: auto;
   gap: 8px;
   border: 1px solid #edf1f5;
-  border-radius: 14px;
+  border-radius: 6px;
   background: #f8fafc;
   padding: 12px;
 }
@@ -985,7 +1342,7 @@ onBeforeUnmount(() => {
 .message-row {
   width: fit-content;
   max-width: min(680px, 92%);
-  border-radius: 14px;
+  border-radius: 6px;
   padding: 10px 12px;
   color: #1e293b;
   font-size: 13px;
@@ -1016,11 +1373,11 @@ onBeforeUnmount(() => {
 .primary-button,
 .secondary-button {
   display: inline-flex;
-  min-height: 42px;
+  min-height: 38px;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  border-radius: 999px;
+  border-radius: 6px;
   cursor: pointer;
   font-size: 14px;
   font-weight: 760;
@@ -1031,7 +1388,7 @@ onBeforeUnmount(() => {
   border: 0;
   background: #14b8a6;
   color: #fff;
-  box-shadow: 0 14px 30px rgba(20, 184, 166, 0.22);
+  box-shadow: none;
 }
 
 .secondary-button {
@@ -1046,19 +1403,33 @@ onBeforeUnmount(() => {
   opacity: 0.5;
 }
 
-@media (max-width: 1280px) {
+@media (max-width: 1180px) {
   .online-creator-page {
+    height: auto;
+    min-height: calc(100dvh - 64px - 3rem);
     grid-template-columns: minmax(150px, 190px) minmax(0, 1fr);
+    overflow: visible;
   }
 
   .online-creator-page > :deep(.creator-result-panel) {
     grid-column: 1 / -1;
+  }
+
+  .creator-workspace,
+  .online-creator-page > :deep(.creator-result-panel) {
+    overflow: visible;
   }
 }
 
 @media (max-width: 760px) {
   .online-creator-page {
     grid-template-columns: 1fr;
+    min-height: auto;
+  }
+
+  .online-creator-page.overview-mode .creator-workspace,
+  .online-creator-page > :deep(.creator-result-panel) {
+    grid-column: 1;
   }
 
   .form-grid {

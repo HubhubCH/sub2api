@@ -112,8 +112,16 @@ function isTextModelName(model: string): boolean {
   return !/(image|imagine|video|sora|audio|speech|tts|whisper|transcrib)/i.test(normalized)
 }
 
-function isAudioModelName(model: string): boolean {
-  return /(audio|realtime|tts|asr|transcribe|transcription|whisper)/i.test(model.trim())
+function isTranscriptionModelName(model: string): boolean {
+  const normalized = model.trim()
+  if (/realtime|tts|speech|asr|transcribe|transcription|whisper/i.test(normalized)) return false
+  return /(?:gpt.*audio|audio.*preview)/i.test(normalized)
+}
+
+function isSpeechModelName(model: string): boolean {
+  const normalized = model.trim()
+  if (/realtime|tts|speech|asr|transcribe|transcription|whisper/i.test(normalized)) return false
+  return /(?:gpt.*audio|audio.*preview)/i.test(normalized)
 }
 
 function audioFormatForFile(file: File): 'mp3' | 'wav' {
@@ -197,7 +205,7 @@ export async function listTextModels(apiKey: string): Promise<string[]> {
   ))
 }
 
-export async function listAudioModels(apiKey: string): Promise<string[]> {
+async function listModelsByCapability(apiKey: string, predicate: (model: string) => boolean): Promise<string[]> {
   const response = await fetch(buildGatewayUrl('/v1/models'), {
     headers: {
       Authorization: `Bearer ${apiKey.trim()}`,
@@ -213,8 +221,16 @@ export async function listAudioModels(apiKey: string): Promise<string[]> {
   return Array.from(new Set(
     items
       .map((item) => String(asRecord(item)?.id || '').trim())
-      .filter(isAudioModelName)
+      .filter(predicate)
   ))
+}
+
+export function listTranscriptionModels(apiKey: string): Promise<string[]> {
+  return listModelsByCapability(apiKey, isTranscriptionModelName)
+}
+
+export function listSpeechModels(apiKey: string): Promise<string[]> {
+  return listModelsByCapability(apiKey, isSpeechModelName)
 }
 
 export async function createTextCompletion(request: CreatorTextCompletionRequest): Promise<CreatorTextCompletionResult> {
@@ -318,7 +334,8 @@ export async function synthesizeCreatorSpeech(request: CreatorSpeechRequest): Pr
 export const onlineCreatorAPI = {
   listTextModels,
   createTextCompletion,
-  listAudioModels,
+  listTranscriptionModels,
+  listSpeechModels,
   transcribeCreatorAudio,
   synthesizeCreatorSpeech,
 }
