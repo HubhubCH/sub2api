@@ -27,6 +27,10 @@
           </div>
 
           <CreatorKeyPicker v-model="selectedKeyId" :keys="usableKeys" :disabled="submitting" />
+          <p v-if="selectedApiKey" class="key-context">
+            当前分组：{{ selectedApiKey.group?.name || '默认分组' }}
+            <span>平台：{{ selectedApiKey.group?.platform || '自动路由' }}</span>
+          </p>
 
           <div v-if="activeTool === 'assistant'" class="assistant-log">
             <div v-for="message in assistantMessages" :key="message.id" :class="['message-row', message.role]">
@@ -61,7 +65,7 @@
 
               <label v-if="isImageTool || activeTool === 'batch-main' || activeTool === 'batch-clone'" class="field-block">
                 <span>画面尺寸</span>
-                <select v-model="imageSize" class="field-control">
+                <select v-model="imageSize" class="field-control" data-test="creator-image-size">
                   <option value="1024x1024">1024 x 1024</option>
                   <option value="1536x1024">1536 x 1024</option>
                   <option value="1024x1536">1024 x 1536</option>
@@ -115,6 +119,54 @@
                   <option value="logo">添加 logo</option>
                 </select>
               </label>
+            </div>
+          </div>
+
+          <div v-if="activeTool === 'image'" class="panel-block image-settings">
+            <div class="field-block">
+              <span>场景模板</span>
+              <div class="scene-options" role="group" aria-label="场景模板">
+                <button
+                  v-for="scene in imageSceneOptions"
+                  :key="scene.id"
+                  type="button"
+                  :class="{ active: imageScene === scene.id }"
+                  :data-test="`creator-image-scene-${scene.id}`"
+                  @click="imageScene = scene.id"
+                >
+                  {{ scene.label }}
+                </button>
+              </div>
+            </div>
+            <div class="image-parameter-grid">
+              <label class="field-block">
+                <span>画质</span>
+                <select v-model="imageQuality" class="field-control" data-test="creator-image-quality" :disabled="usesGrokImageModel">
+                  <option value="high">高</option>
+                  <option value="medium">标准</option>
+                  <option value="low">快速</option>
+                </select>
+              </label>
+              <label class="field-block">
+                <span>风格</span>
+                <select v-model="imageStyle" class="field-control" data-test="creator-image-style">
+                  <option value="auto">自动</option>
+                  <option value="natural">自然</option>
+                  <option value="vivid">鲜明</option>
+                </select>
+              </label>
+              <label class="field-block">
+                <span>背景</span>
+                <select v-model="imageBackground" class="field-control" data-test="creator-image-background" :disabled="usesGrokImageModel">
+                  <option value="auto">自动</option>
+                  <option value="opaque">不透明</option>
+                  <option value="transparent">透明</option>
+                </select>
+              </label>
+            </div>
+            <div class="cost-estimate" data-test="creator-image-cost">
+              <div><span>预计费用</span><strong>{{ estimatedImageCostLabel }}</strong></div>
+              <p>{{ estimatedImageTier }} · 1 张 · 按当前分组估算，实际扣费以账单为准。</p>
             </div>
           </div>
 
@@ -219,6 +271,7 @@ import CreatorResultPanel from '@/components/user/creator/CreatorResultPanel.vue
 import CreatorToolRail from '@/components/user/creator/CreatorToolRail.vue'
 import { keysAPI } from '@/api'
 import { generationRecordsAPI, type GenerationRecord } from '@/api/generationRecords'
+import { userGroupsAPI } from '@/api/groups'
 import { imageGenerationAPI } from '@/api/imageGeneration'
 import { AGNES_VIDEO_MODEL, videoGenerationAPI, type GatewayVideoProvider } from '@/api/videoGeneration'
 import * as batchImageAPI from '@/api/batchImage'
@@ -294,12 +347,20 @@ const tools: CreatorToolConfig[] = [
   { id: 'history', label: '历史记录', badge: '记录', icon: 'clock', action: '查看', placeholder: '' },
 ]
 
+const imageSceneOptions = [
+  { id: 'product', label: '商品白底图', directive: '电商商品白底主图，主体居中，边缘清晰，光线均匀，无多余装饰。' },
+  { id: 'lifestyle', label: '商品场景图', directive: '真实生活方式场景，商品为视觉主体，环境与用途自然匹配。' },
+  { id: 'poster', label: '社媒海报', directive: '适合社交媒体发布的海报构图，主体突出，留出清晰文案空间。' },
+  { id: 'portrait', label: '人物摄影', directive: '自然人物摄影，肤色真实，光影柔和，背景简洁。' },
+] as const
+
 function normalizeCreatorToolId(toolId?: string): CreatorToolId {
   return tools.some((tool) => tool.id === toolId) ? toolId as CreatorToolId : 'home'
 }
 
 const activeTool = ref<CreatorToolId>(normalizeCreatorToolId(props.initialTool))
 const apiKeys = ref<ApiKey[]>([])
+const userGroupRates = ref<Record<number, number>>({})
 const selectedKeyId = ref('')
 const textModels = ref<string[]>([])
 const imageModels = ref<string[]>([])
@@ -311,6 +372,10 @@ const modelLoadErrors = ref<Partial<Record<CreatorModelCapability, string>>>({})
 const selectedModel = ref('')
 const targetLanguage = ref('中文')
 const imageSize = ref('1024x1024')
+const imageScene = ref<(typeof imageSceneOptions)[number]['id'] | ''>('')
+const imageQuality = ref('high')
+const imageStyle = ref('auto')
+const imageBackground = ref('auto')
 const videoDuration = ref(5)
 const prompt = ref('')
 const productName = ref('')
@@ -349,6 +414,7 @@ const MAX_POLL_ATTEMPTS = 60
 const activeToolConfig = computed(() => tools.find((tool) => tool.id === activeTool.value) || tools[0])
 const homeTools = computed(() => tools.filter((tool) => tool.id !== 'home' && tool.id !== 'history'))
 const selectedApiKey = computed(() => usableKeys.value.find((key) => String(key.id) === selectedKeyId.value) || null)
+const usesGrokImageModel = computed(() => isGrokImageModelName(selectedModel.value))
 const usableKeys = computed(() => apiKeys.value.filter((key) => isUsableCreatorKey(key)))
 const isTextTool = computed(() => activeTool.value === 'assistant' || activeTool.value === 'product-copy')
 const isImageTool = computed(() => ['image', 'edit', 'image-translate', 'watermark'].includes(activeTool.value))
@@ -422,6 +488,22 @@ const recentItems = computed<CreatorRecentItem[]>(() => {
   }))
   return [...localRecords.value.slice(0, 4), ...backend].slice(0, 6)
 })
+const estimatedImageTier = computed(() => {
+  const [width, height] = imageSize.value.split('x').map(Number)
+  return Math.max(width || 1024, height || 1024) > 1024 ? '2K' : '1K'
+})
+const estimatedImageCost = computed(() => {
+  if (!selectedApiKey.value || !selectedModel.value) return null
+  const group = selectedApiKey.value.group
+  const configuredPrice = estimatedImageTier.value === '1K' ? group?.image_price_1k : group?.image_price_2k
+  const unitPrice = typeof configuredPrice === 'number' && configuredPrice >= 0
+    ? configuredPrice
+    : defaultImageUnitPrice(selectedModel.value, estimatedImageTier.value)
+  const groupRate = group ? (userGroupRates.value[group.id] ?? group.rate_multiplier) : 1
+  const multiplier = group?.image_rate_independent ? group.image_rate_multiplier : groupRate
+  return Math.max(0, unitPrice * Math.max(0, multiplier))
+})
+const estimatedImageCostLabel = computed(() => estimatedImageCost.value == null ? '--' : `约 $${estimatedImageCost.value.toFixed(4)}`)
 
 function selectTool(toolId: string) {
   if (submitting.value) return
@@ -449,8 +531,33 @@ function resetCurrentInput() {
   logoFile.value = null
   batchProductFiles.value = []
   selectedAudioFile.value = null
+  imageScene.value = ''
+  imageQuality.value = 'high'
+  imageStyle.value = 'auto'
+  imageBackground.value = 'auto'
   errorMessage.value = ''
   statusMessage.value = ''
+}
+
+function defaultImageUnitPrice(model: string, tier: string): number {
+  const normalized = model.trim().toLowerCase()
+  if (normalized === 'grok-imagine' || normalized === 'grok-imagine-image-quality') return tier === '1K' ? 0.05 : 0.07
+  if (normalized === 'grok-imagine-image' || normalized === 'grok-imagine-edit') return 0.02
+  return tier === '2K' ? 0.201 : 0.134
+}
+
+function isGrokImageModelName(model: string): boolean {
+  return model.trim().toLowerCase().startsWith('grok-imagine')
+}
+
+function buildImagePrompt(sourcePrompt: string): string {
+  const scene = imageSceneOptions.find((item) => item.id === imageScene.value)
+  const styleDirective = imageStyle.value === 'natural'
+    ? '整体风格自然写实。'
+    : imageStyle.value === 'vivid'
+      ? '整体风格鲜明，色彩和对比度更强。'
+      : ''
+  return [scene?.directive, sourcePrompt, styleDirective].filter(Boolean).join('\n')
 }
 
 function handleImageFile(event: Event) {
@@ -544,6 +651,14 @@ async function loadApiKeys() {
   }
 }
 
+async function loadUserGroupRates() {
+  try {
+    userGroupRates.value = await userGroupsAPI.getUserGroupRates()
+  } catch {
+    userGroupRates.value = {}
+  }
+}
+
 async function loadRecords() {
   try {
     records.value = await generationRecordsAPI.list(8)
@@ -594,15 +709,17 @@ async function submitProductCopy(apiKey: string) {
 }
 
 async function submitImage(apiKey: string) {
-  output.value = imageOutputFromResponse(await imageGenerationAPI.generateImage({
+  const request = {
     apiKey,
     model: selectedModel.value,
-    prompt: prompt.value,
+    prompt: buildImagePrompt(prompt.value),
     size: imageSize.value,
-    quality: 'high',
+    quality: imageQuality.value,
     count: 1,
     outputFormat: 'png',
-  }))
+    ...(imageBackground.value === 'auto' ? {} : { background: imageBackground.value }),
+  }
+  output.value = imageOutputFromResponse(await imageGenerationAPI.generateImage(request))
   statusMessage.value = '图片已生成'
 }
 
@@ -1160,9 +1277,14 @@ watch(selectedKeyId, () => {
 watch(() => props.initialTool, (toolId) => selectTool(normalizeCreatorToolId(toolId)))
 watch(activeTool, syncSelectedModel)
 watch(watermarkMode, syncSelectedModel)
+watch(selectedModel, (model) => {
+  if (!isGrokImageModelName(model)) return
+  imageQuality.value = 'high'
+  imageBackground.value = 'auto'
+})
 
 onMounted(async () => {
-  await loadApiKeys()
+  await Promise.all([loadApiKeys(), loadUserGroupRates()])
   await loadRecords()
 })
 
@@ -1182,7 +1304,7 @@ onBeforeUnmount(() => {
   min-height: 620px;
   margin: 0 auto;
   display: grid;
-  grid-template-columns: 160px minmax(340px, 420px) minmax(360px, 1fr);
+  grid-template-columns: 200px minmax(480px, 540px) minmax(360px, 1fr);
   align-items: stretch;
   gap: 12px;
   overflow: hidden;
@@ -1246,6 +1368,82 @@ onBeforeUnmount(() => {
 .panel-block {
   border-top: 1px solid #edf1f5;
   padding-top: 12px;
+}
+
+.key-context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: -4px 0 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.image-settings {
+  display: grid;
+  gap: 12px;
+}
+
+.scene-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.scene-options button {
+  min-height: 32px;
+  border: 1px solid #dbe4ee;
+  border-radius: 6px;
+  background: #fff;
+  color: #475569;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 10px;
+}
+
+.scene-options button:hover,
+.scene-options button.active {
+  border-color: #5eead4;
+  background: #f0fdfa;
+  color: #0f766e;
+}
+
+.image-parameter-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.cost-estimate {
+  display: grid;
+  gap: 5px;
+  border: 1px solid #bae6fd;
+  border-radius: 6px;
+  background: rgba(240, 249, 255, 0.86);
+  padding: 10px 12px;
+}
+
+.cost-estimate div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #475569;
+  font-size: 12px;
+}
+
+.cost-estimate strong {
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.cost-estimate p {
+  margin: 0;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .form-grid {
@@ -1442,6 +1640,10 @@ onBeforeUnmount(() => {
   }
 
   .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .image-parameter-grid {
     grid-template-columns: 1fr;
   }
 

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
 const listKeys = vi.hoisted(() => vi.fn())
+const getUserGroupRates = vi.hoisted(() => vi.fn())
 const listTextModels = vi.hoisted(() => vi.fn())
 const listTranscriptionModels = vi.hoisted(() => vi.fn())
 const listSpeechModels = vi.hoisted(() => vi.fn())
@@ -28,6 +29,12 @@ const getRecordContent = vi.hoisted(() => vi.fn())
 vi.mock('@/api', () => ({
   keysAPI: {
     list: listKeys,
+  },
+}))
+
+vi.mock('@/api/groups', () => ({
+  userGroupsAPI: {
+    getUserGroupRates,
   },
 }))
 
@@ -144,6 +151,7 @@ function installCanvasImageMocks() {
 describe('OnlineCreatorView', () => {
   beforeEach(() => {
     listKeys.mockReset()
+    getUserGroupRates.mockReset()
     listTextModels.mockReset()
     listTranscriptionModels.mockReset()
     listSpeechModels.mockReset()
@@ -174,6 +182,7 @@ describe('OnlineCreatorView', () => {
         { id: 3, name: '过期密钥', key: 'sk-expired', status: 'active', quota: 0, quota_used: 0, expires_at: '2026-07-01T00:00:00Z' },
       ],
     })
+    getUserGroupRates.mockResolvedValue({})
     listTextModels.mockResolvedValue(['gpt-4o-mini'])
     listTranscriptionModels.mockResolvedValue(['gpt-4o-audio-preview'])
     listSpeechModels.mockResolvedValue(['gpt-4o-audio-preview'])
@@ -289,6 +298,69 @@ describe('OnlineCreatorView', () => {
       outputFormat: 'png',
     })
     expect(wrapper.find('img[alt="创作结果"]').attributes('src')).toContain('data:image/png;base64,aW1hZ2U=')
+  })
+
+  it('生图场景、画质、风格、背景和分组费用估算同步到请求', async () => {
+    getUserGroupRates.mockResolvedValue({ 8: 3 })
+    listKeys.mockResolvedValue({
+      items: [{
+        id: 1,
+        name: '生图密钥',
+        key: 'sk-image',
+        status: 'active',
+        quota: 0,
+        quota_used: 0,
+        expires_at: null,
+        group: {
+          id: 8,
+          name: '生图分组',
+          platform: 'openai',
+          rate_multiplier: 2,
+          image_rate_independent: false,
+          image_rate_multiplier: 1,
+          image_price_1k: 0.1,
+          image_price_2k: 0.2,
+        },
+      }],
+    })
+    generateImage.mockResolvedValue({ data: [{ b64_json: 'aW1hZ2U=' }] })
+    const wrapper = await mountReadyView('image')
+
+    expect(wrapper.text()).toContain('当前分组：生图分组')
+    expect(wrapper.find('[data-test="creator-image-cost"]').text()).toContain('约 $0.3000')
+    await wrapper.find('[data-test="creator-image-scene-product"]').trigger('click')
+    await wrapper.find('[data-test="creator-image-size"]').setValue('1536x1024')
+    await wrapper.find('[data-test="creator-image-quality"]').setValue('medium')
+    await wrapper.find('[data-test="creator-image-style"]').setValue('vivid')
+    await wrapper.find('[data-test="creator-image-background"]').setValue('transparent')
+    await wrapper.find('[data-test="creator-prompt"]').setValue('一台银色咖啡机')
+
+    expect(wrapper.find('[data-test="creator-image-cost"]').text()).toContain('2K')
+    expect(wrapper.find('[data-test="creator-image-cost"]').text()).toContain('约 $0.6000')
+    await wrapper.find('[data-test="creator-submit"]').trigger('submit')
+    await flushPromises()
+
+    expect(generateImage).toHaveBeenCalledWith({
+      apiKey: 'sk-image',
+      model: 'gpt-image-1',
+      prompt: '电商商品白底主图，主体居中，边缘清晰，光线均匀，无多余装饰。\n一台银色咖啡机\n整体风格鲜明，色彩和对比度更强。',
+      size: '1536x1024',
+      quality: 'medium',
+      count: 1,
+      outputFormat: 'png',
+      background: 'transparent',
+    })
+  })
+
+  it('Grok 生图别名按质量版估算并禁用不兼容参数', async () => {
+    listImageModels.mockResolvedValue(['grok-imagine'])
+    const wrapper = await mountReadyView('image')
+
+    expect(wrapper.find('[data-test="creator-image-cost"]').text()).toContain('约 $0.0500')
+    expect(wrapper.find('[data-test="creator-image-quality"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-test="creator-image-background"]').attributes('disabled')).toBeDefined()
+    await wrapper.find('[data-test="creator-image-size"]').setValue('1536x1024')
+    expect(wrapper.find('[data-test="creator-image-cost"]').text()).toContain('约 $0.0700')
   })
 
   it('图片翻译上传原图后调用 editImage 并保留构图风格提示', async () => {

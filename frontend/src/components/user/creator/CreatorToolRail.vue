@@ -105,6 +105,7 @@ defineEmits<{
 
   .tool-button {
     flex: 0 0 auto;
+    width: auto;
     white-space: nowrap;
   }
 }
