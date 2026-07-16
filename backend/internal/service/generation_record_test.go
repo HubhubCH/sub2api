@@ -25,6 +25,7 @@ type generationRecordRepoStub struct {
 	completeByUpstreamErr error
 	taskExists            map[string]bool
 	taskExistsFunc        func(context.Context, string) (bool, error)
+	cleanupFunc           func(context.Context, int64, time.Time, int) ([]string, error)
 }
 
 func (r *generationRecordRepoStub) Create(_ context.Context, p CreateGenerationRecordParams, _ time.Time, _ int) (*GenerationRecord, []string, error) {
@@ -58,9 +59,46 @@ func (r *generationRecordRepoStub) TaskExists(ctx context.Context, taskID string
 	}
 	return r.taskExists[taskID], nil
 }
-func (r *generationRecordRepoStub) Cleanup(_ context.Context, userID int64, cutoff time.Time, limit int) ([]string, error) {
+func (r *generationRecordRepoStub) Cleanup(ctx context.Context, userID int64, cutoff time.Time, limit int) ([]string, error) {
+	if r.cleanupFunc != nil {
+		return r.cleanupFunc(ctx, userID, cutoff, limit)
+	}
 	r.cleanupUser, r.cleanupCutoff, r.cleanupLimit = userID, cutoff, limit
 	return r.cleanupIDs, nil
+}
+
+func TestGenerationRecordServiceStopWaitsForWorkers(t *testing.T) {
+	cleanupStarted := make(chan struct{})
+	releaseCleanup := make(chan struct{})
+	repo := &generationRecordRepoStub{}
+	repo.cleanupFunc = func(context.Context, int64, time.Time, int) ([]string, error) {
+		close(cleanupStarted)
+		<-releaseCleanup
+		return nil, nil
+	}
+	svc := NewGenerationRecordService(repo)
+	svc.dataDir = t.TempDir()
+	svc.Start()
+	<-cleanupStarted
+
+	stopped := make(chan struct{})
+	go func() {
+		svc.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+		close(releaseCleanup)
+		t.Fatal("Stop 在清理 worker 退出前返回")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseCleanup)
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop 未等待清理 worker 退出")
+	}
+	require.NotPanics(t, svc.Stop)
 }
 func (r *generationRecordRepoStub) ListPendingVideos(context.Context, time.Time, int) ([]*GenerationRecord, error) {
 	return r.pending, nil

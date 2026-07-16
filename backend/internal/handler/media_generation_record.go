@@ -101,8 +101,8 @@ func (h *OpenAIGatewayHandler) persistMediaGeneration(c *gin.Context, mediaType 
 	c.Request.ContentLength = int64(len(body))
 
 	taskID := "gen_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	provider := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "provider").String()))
 	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	provider := inferMediaGenerationProvider(mediaType, gjson.GetBytes(body, "provider").String(), model)
 	prompt := strings.TrimSpace(gjson.GetBytes(body, "prompt").String())
 	persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 5*time.Second)
 	_, err = h.generationRecordService.Create(persistCtx, service.CreateGenerationRecordParams{
@@ -128,21 +128,28 @@ func (h *OpenAIGatewayHandler) persistMediaGeneration(c *gin.Context, mediaType 
 	cancelRun()
 
 	status := service.GenerationStatusFailed
-	upstreamTaskID := ""
+	upstreamTaskID := firstJSONText(buffer.Bytes(), "request_id", "id")
 	failure := "生成请求失败"
 	if buffer.Status() >= 200 && buffer.Status() < 300 {
 		status = service.GenerationStatusCompleted
 		failure = ""
 		if mediaType == "video" {
 			status = service.GenerationStatusSubmitted
-			upstreamTaskID = firstJSONText(buffer.Bytes(), "request_id", "id")
 			responseStatus := strings.ToLower(firstJSONText(buffer.Bytes(), "status"))
 			if responseStatus == "completed" || responseStatus == "succeeded" || responseStatus == "success" {
 				status = service.GenerationStatusCompleted
 			}
 		}
-	} else if message := responseErrorMessage(buffer.Bytes()); message != "" {
-		failure = message
+	} else {
+		if message := responseErrorMessage(buffer.Bytes()); message != "" {
+			failure = message
+		}
+		if mediaType == "video" {
+			upstreamTaskID = firstJSONText(buffer.Bytes(), "error.upstream_task_id")
+			if upstreamTaskID != "" && videoTaskAccountID(c) > 0 && videoTaskProvider(c) != "" {
+				status = service.GenerationStatusSubmitted
+			}
+		}
 	}
 	finishCtx, cancelFinish := context.WithTimeout(context.WithoutCancel(originalRequest.Context()), 10*time.Second)
 	if finishErr := h.generationRecordService.Finish(finishCtx, taskID, subject.UserID, videoTaskAccountID(c), status, upstreamTaskID, buffer.Bytes(), failure); finishErr != nil {
@@ -152,6 +159,29 @@ func (h *OpenAIGatewayHandler) persistMediaGeneration(c *gin.Context, mediaType 
 	if commitErr := buffer.Commit(); commitErr != nil {
 		_ = c.Error(commitErr)
 	}
+}
+
+func inferMediaGenerationProvider(mediaType, provider, model string) string {
+	if provider = strings.ToLower(strings.TrimSpace(provider)); provider != "" {
+		return provider
+	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	if mediaType != "video" {
+		if strings.Contains(model, "grok") {
+			return "grok"
+		}
+		return ""
+	}
+	switch model {
+	case service.AgnesVideoModel, service.AgnesVideoModelAlias:
+		return "agnes"
+	case "grok-imagine-video", "grok-imagine-video-1.5", "sora-2", "sora-2-pro":
+		return "grok"
+	}
+	if strings.Contains(model, "video") || strings.Contains(model, "sora") {
+		return "grok"
+	}
+	return ""
 }
 
 func videoTaskAccountID(c *gin.Context) int64 {

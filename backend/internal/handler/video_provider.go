@@ -333,6 +333,11 @@ func (h *OpenAIGatewayHandler) handleVideoProviderSubmissionRequest(
 			videoTaskErrorResponse(c, service.ErrVideoTaskBindingFailed, "")
 			return
 		}
+		c.Set(videoTaskAccountIDContextKey, account.ID)
+		c.Set(videoTaskProviderContextKey, adapter.Provider())
+		if result != nil {
+			recordOpenAIMediaUsage(c, h, reqLog, apiKey, subject, subscription, account, result, requestModel, body, "")
+		}
 
 		persistCtx, cancelPersist := videoTaskPersistenceContext(requestCtx)
 		_, persistErr := h.videoTaskService.Create(persistCtx, service.CreateVideoTaskParams{
@@ -359,15 +364,9 @@ func (h *OpenAIGatewayHandler) handleVideoProviderSubmissionRequest(
 			videoTaskErrorResponse(c, persistErr, upstreamTaskID)
 			return
 		}
-		c.Set(videoTaskAccountIDContextKey, account.ID)
-		c.Set(videoTaskProviderContextKey, adapter.Provider())
-
 		// Redis 只作为尽力而为的加速层；数据库绑定才是所有权和原账号固定路由的权威来源。
 		if bindErr := adapter.BindRequestAccount(requestCtx, apiKey.GroupID, upstreamTaskID, account.ID); bindErr != nil {
 			reqLog.Warn("video_provider.bind_request_account_cache_failed", zap.Int64("account_id", account.ID), zap.String("request_id", upstreamTaskID), zap.Error(bindErr))
-		}
-		if result != nil {
-			recordOpenAIMediaUsage(c, h, reqLog, apiKey, subject, subscription, account, result, requestModel, body, "")
 		}
 		if responseBuffer == nil || !responseBuffer.Written() {
 			reqLog.Error("video_provider.success_response_missing", zap.String("upstream_task_id", upstreamTaskID))

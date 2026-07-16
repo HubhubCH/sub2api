@@ -103,6 +103,7 @@ func provideCleanup(
 	paymentOrderExpiry *service.PaymentOrderExpiryService,
 	channelMonitorRunner *service.ChannelMonitorRunner,
 	quotaFlusher *service.UserPlatformQuotaUsageFlusher,
+	asyncImage *handler.AsyncImageHandler,
 	tokenLeaderboard *service.TokenLeaderboardService,
 	generationRecord *service.GenerationRecordService,
 	upstreamBillingProbe *service.UpstreamBillingProbeService,
@@ -119,6 +120,12 @@ func provideCleanup(
 
 		// 应用层清理步骤可并行执行，基础设施资源（Redis/Ent）最后按顺序关闭。
 		parallelSteps := []cleanupStep{
+			{"AsyncImageHandler", func() error {
+				if asyncImage != nil {
+					asyncImage.Stop()
+				}
+				return nil
+			}},
 			{"GenerationRecordService", func() error {
 				if generationRecord != nil {
 					generationRecord.Stop()

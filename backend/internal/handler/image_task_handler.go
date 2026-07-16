@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -21,15 +22,53 @@ import (
 )
 
 type AsyncImageHandler struct {
-	tasks   *service.ImageTaskService
-	openAI  *OpenAIGatewayHandler
-	execute func(platform string, c *gin.Context)
+	tasks           *service.ImageTaskService
+	openAI          *OpenAIGatewayHandler
+	execute         func(platform string, c *gin.Context)
+	lifecycleMu     sync.Mutex
+	lifecycleCtx    context.Context
+	lifecycleCancel context.CancelFunc
+	lifecycleWG     sync.WaitGroup
+	stopped         bool
 }
 
 func NewAsyncImageHandler(tasks *service.ImageTaskService, openAI *OpenAIGatewayHandler) *AsyncImageHandler {
-	h := &AsyncImageHandler{tasks: tasks, openAI: openAI}
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
+	h := &AsyncImageHandler{tasks: tasks, openAI: openAI, lifecycleCtx: lifecycleCtx, lifecycleCancel: lifecycleCancel}
 	h.execute = h.executeWithGateway
 	return h
+}
+
+func (h *AsyncImageHandler) beginTask() (context.Context, bool) {
+	if h == nil {
+		return nil, false
+	}
+	h.lifecycleMu.Lock()
+	defer h.lifecycleMu.Unlock()
+	if h.stopped {
+		return nil, false
+	}
+	if h.lifecycleCtx == nil {
+		h.lifecycleCtx, h.lifecycleCancel = context.WithCancel(context.Background())
+	}
+	h.lifecycleWG.Add(1)
+	return h.lifecycleCtx, true
+}
+
+// Stop 取消并等待所有已接收的异步图片任务退出，避免关闭数据库和缓存后仍有任务写入。
+func (h *AsyncImageHandler) Stop() {
+	if h == nil {
+		return
+	}
+	h.lifecycleMu.Lock()
+	if !h.stopped {
+		h.stopped = true
+		if h.lifecycleCancel != nil {
+			h.lifecycleCancel()
+		}
+	}
+	h.lifecycleMu.Unlock()
+	h.lifecycleWG.Wait()
 }
 
 // enabled reports whether the async image task feature is available. Object
@@ -90,10 +129,16 @@ func (h *AsyncImageHandler) Submit(c *gin.Context) {
 		return
 	}
 
-	taskCtx, recorder, cancel := newAsyncImageContext(c, body, h.tasks.ExecutionTimeout())
+	lifecycleCtx, accepted := h.beginTask()
+	if !accepted {
+		imageTaskError(c, service.ErrImageTaskUnavailable)
+		return
+	}
+	taskCtx, recorder, cancel := newAsyncImageContext(c, body, h.tasks.ExecutionTimeout(), lifecycleCtx)
 	task, err := h.tasks.Create(c.Request.Context(), service.ImageTaskOwner{UserID: apiKey.UserID, APIKeyID: apiKey.ID})
 	if err != nil {
 		cancel()
+		h.lifecycleWG.Done()
 		imageTaskError(c, err)
 		return
 	}
@@ -112,7 +157,10 @@ func (h *AsyncImageHandler) Submit(c *gin.Context) {
 		"poll_url":   pollURL,
 	})
 
-	go h.run(task.ID, platform, taskCtx, recorder, cancel)
+	go func() {
+		defer h.lifecycleWG.Done()
+		h.run(task.ID, platform, taskCtx, recorder, cancel)
+	}()
 }
 
 func (h *AsyncImageHandler) Get(c *gin.Context) {
@@ -208,9 +256,17 @@ func (h *AsyncImageHandler) failTask(taskID string, statusCode int, taskErr json
 	}
 }
 
-func newAsyncImageContext(c *gin.Context, body []byte, timeoutDuration time.Duration) (*gin.Context, *httptest.ResponseRecorder, context.CancelFunc) {
+func newAsyncImageContext(c *gin.Context, body []byte, timeoutDuration time.Duration, lifecycleCtx context.Context) (*gin.Context, *httptest.ResponseRecorder, context.CancelFunc) {
 	base := context.WithoutCancel(c.Request.Context())
-	executionCtx, cancel := context.WithTimeout(base, timeoutDuration)
+	executionCtx, cancelExecution := context.WithTimeout(base, timeoutDuration)
+	stopLifecycle := func() bool { return true }
+	if lifecycleCtx != nil {
+		stopLifecycle = context.AfterFunc(lifecycleCtx, cancelExecution)
+	}
+	cancel := func() {
+		stopLifecycle()
+		cancelExecution()
+	}
 	request := c.Request.Clone(executionCtx)
 	request.Body = io.NopCloser(bytes.NewReader(body))
 	request.GetBody = func() (io.ReadCloser, error) {

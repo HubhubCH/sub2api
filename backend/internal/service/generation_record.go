@@ -111,6 +111,7 @@ type GenerationRecordService struct {
 	now           func() time.Time
 	stop          chan struct{}
 	stopOnce      sync.Once
+	workerWG      sync.WaitGroup
 	poller        GenerationVideoStatusPoller
 	download      func(context.Context, int64, string, string, int) (string, error)
 	videoFinishMu sync.Mutex
@@ -141,9 +142,17 @@ func (s *GenerationRecordService) Start() {
 	if s == nil || s.repo == nil {
 		return
 	}
-	go s.runCleanupLoop()
+	s.workerWG.Add(1)
+	go func() {
+		defer s.workerWG.Done()
+		s.runCleanupLoop()
+	}()
 	if s.poller != nil {
-		go s.runVideoStatusLoop()
+		s.workerWG.Add(1)
+		go func() {
+			defer s.workerWG.Done()
+			s.runVideoStatusLoop()
+		}()
 	}
 }
 
@@ -164,6 +173,7 @@ func (s *GenerationRecordService) Stop() {
 		return
 	}
 	s.stopOnce.Do(func() { close(s.stop) })
+	s.workerWG.Wait()
 }
 
 func (s *GenerationRecordService) Create(ctx context.Context, params CreateGenerationRecordParams) (*GenerationRecord, error) {
