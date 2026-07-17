@@ -4,6 +4,7 @@ export interface GenerationRecord {
   task_id: string
   api_key_id: number
   media_type: 'image' | 'video'
+  creator_tool?: string
   provider: string
   model: string
   prompt_preview: string
@@ -14,7 +15,7 @@ export interface GenerationRecord {
   created_at: string
 }
 
-export async function listGenerationRecords(limit = 30): Promise<GenerationRecord[]> {
+export async function listGenerationRecords(limit = 10): Promise<GenerationRecord[]> {
   const response = await apiClient.get<{ data: GenerationRecord[] }>('/user/generation-records', { params: { limit } })
   return response.data.data || []
 }

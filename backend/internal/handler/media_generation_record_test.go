@@ -22,7 +22,7 @@ type mediaGenerationRecordRepoStub struct {
 
 func (r *mediaGenerationRecordRepoStub) Create(_ context.Context, params service.CreateGenerationRecordParams, _ time.Time, _ int) (*service.GenerationRecord, []string, error) {
 	r.created = params
-	r.record = &service.GenerationRecord{TaskID: params.TaskID, UserID: params.UserID, APIKeyID: params.APIKeyID, MediaType: params.MediaType, Provider: params.Provider, Model: params.Model}
+	r.record = &service.GenerationRecord{TaskID: params.TaskID, UserID: params.UserID, APIKeyID: params.APIKeyID, MediaType: params.MediaType, CreatorTool: params.CreatorTool, Provider: params.Provider, Model: params.Model}
 	return r.record, nil, nil
 }
 
@@ -73,6 +73,7 @@ func TestPersistVideoGenerationInfersAndPersistsProvider(t *testing.T) {
 			c, _ := gin.CreateTestContext(recorder)
 			c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{"model":"`+test.model+`","prompt":"waves"}`))
 			c.Request.Header.Set("X-Save-Generation-Record", "1")
+			c.Request.Header.Set("X-Creator-Tool", "video")
 			c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{ID: 9, UserID: 7, GroupID: &groupID})
 			c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 7})
 
@@ -82,8 +83,16 @@ func TestPersistVideoGenerationInfersAndPersistsProvider(t *testing.T) {
 
 			require.Equal(t, http.StatusAccepted, recorder.Code)
 			require.Equal(t, test.provider, repo.created.Provider)
+			require.Equal(t, "video", repo.created.CreatorTool)
 		})
 	}
+}
+
+func TestNormalizeCreatorToolRejectsMismatchedMediaType(t *testing.T) {
+	require.Equal(t, "outpaint", normalizeCreatorTool("OUTPAINT", "image"))
+	require.Equal(t, "video", normalizeCreatorTool("video", "video"))
+	require.Empty(t, normalizeCreatorTool("video", "image"))
+	require.Empty(t, normalizeCreatorTool("unknown", "image"))
 }
 
 func TestPersistVideoGenerationKeepsRecoverableBindingFailureSubmitted(t *testing.T) {

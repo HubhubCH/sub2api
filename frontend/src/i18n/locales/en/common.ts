@@ -198,7 +198,7 @@ export default {
 
   onlineCreator: {
     title: 'AI Creator',
-    description: 'Create images, videos, copy, and audio from one workspace.',
+    description: 'Create images, videos, and copy from one workspace.',
   },
 
   tokenLeaderboard: {

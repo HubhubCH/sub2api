@@ -40,6 +40,7 @@ describe('imageGeneration API streaming transport', () => {
       quality: 'high',
       count: 1,
       outputFormat: 'png',
+      creatorTool: 'outpaint',
     })
 
     expect(result.data).toEqual([
@@ -56,6 +57,7 @@ describe('imageGeneration API streaming transport', () => {
       expect.objectContaining({
         Authorization: `Bearer ${API_KEY}`,
         Accept: 'text/event-stream',
+        'X-Creator-Tool': 'outpaint',
       })
     )
     expect(JSON.parse(String(init?.body))).toEqual(
@@ -214,5 +216,64 @@ describe('imageGeneration API streaming transport', () => {
     expect(body.get('size')).toBeNull()
     expect(body.get('image')).toBe(image)
     expect(body.get('mask')).toBe(mask)
+  })
+
+  it('图片生成请求支持调用方取消信号', async () => {
+    let forwardedSignal: AbortSignal | undefined
+    vi.mocked(fetch).mockImplementation((_url, init) => {
+      forwardedSignal = init?.signal || undefined
+      return new Promise((_resolve, reject) => {
+        forwardedSignal?.addEventListener('abort', () => {
+          const error = new Error('aborted')
+          error.name = 'AbortError'
+          reject(error)
+        }, { once: true })
+      })
+    })
+    const controller = new AbortController()
+
+    const request = generateImage({
+      apiKey: API_KEY,
+      model: 'gpt-image-2',
+      prompt: 'draw a cat',
+      size: '1024x1024',
+      quality: 'high',
+      count: 1,
+      signal: controller.signal,
+    })
+    controller.abort()
+
+    expect(forwardedSignal?.aborted).toBe(true)
+    await expect(request).rejects.toThrow('图片请求已取消')
+  })
+
+  it('图片编辑请求支持调用方取消信号', async () => {
+    let forwardedSignal: AbortSignal | undefined
+    vi.mocked(fetch).mockImplementation((_url, init) => {
+      forwardedSignal = init?.signal || undefined
+      return new Promise((_resolve, reject) => {
+        forwardedSignal?.addEventListener('abort', () => {
+          const error = new Error('aborted')
+          error.name = 'AbortError'
+          reject(error)
+        }, { once: true })
+      })
+    })
+    const controller = new AbortController()
+
+    const request = editImage({
+      apiKey: API_KEY,
+      model: 'gpt-image-2',
+      prompt: 'replace the background',
+      size: '1024x1024',
+      quality: 'high',
+      count: 1,
+      image: new File(['image-bytes'], 'source.png', { type: 'image/png' }),
+      signal: controller.signal,
+    })
+    controller.abort()
+
+    expect(forwardedSignal?.aborted).toBe(true)
+    await expect(request).rejects.toThrow('图片请求已取消')
   })
 })

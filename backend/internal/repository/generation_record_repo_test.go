@@ -52,7 +52,7 @@ func TestGenerationRecordTaskExistsChecksCurrentDatabaseState(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestGenerationRecordCreateEvictsOldestRunningTask(t *testing.T) {
+func TestGenerationRecordCreateRejectsWhenAllTasksAreRunning(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer db.Close()
@@ -62,18 +62,15 @@ func TestGenerationRecordCreateEvictsOldestRunningTask(t *testing.T) {
 	mock.ExpectExec("SELECT pg_advisory_xact_lock").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("DELETE FROM generation_records WHERE user_id").WillReturnRows(sqlmock.NewRows([]string{"task_id"}))
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM generation_records").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
-	mock.ExpectQuery("WHERE user_id=\\$1\\s+ORDER BY created_at ASC").
-		WillReturnRows(sqlmock.NewRows([]string{"task_id"}).AddRow("gen_running_old"))
-	mock.ExpectQuery("INSERT INTO generation_records").WillReturnRows(sqlmock.NewRows([]string{
-		"task_id", "user_id", "api_key_id", "media_type", "provider", "model", "prompt_preview", "status", "created_at", "updated_at",
-	}).AddRow("gen_new", int64(1), int64(2), "image", "grok", "grok-image", "prompt", service.GenerationStatusRunning, now, now))
-	mock.ExpectCommit()
+	mock.ExpectQuery("WHERE user_id=\\$1 AND status IN \\(.*completed.*failed.*\\)\\s+ORDER BY created_at ASC").
+		WillReturnRows(sqlmock.NewRows([]string{"task_id"}))
+	mock.ExpectRollback()
 
 	record, removed, err := repo.Create(context.Background(), generationRecordCreateParams(), now.Add(-72*time.Hour), 5)
 
-	require.NoError(t, err)
-	require.Equal(t, "gen_new", record.TaskID)
-	require.Equal(t, []string{"gen_running_old"}, removed)
+	require.ErrorIs(t, err, service.ErrGenerationRecordLimit)
+	require.Nil(t, record)
+	require.Nil(t, removed)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -87,10 +84,11 @@ func TestGenerationRecordCreateEvictsOldestFinishedTask(t *testing.T) {
 	mock.ExpectExec("SELECT pg_advisory_xact_lock").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("DELETE FROM generation_records WHERE user_id").WillReturnRows(sqlmock.NewRows([]string{"task_id"}))
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM generation_records").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
-	mock.ExpectQuery("DELETE FROM generation_records").WillReturnRows(sqlmock.NewRows([]string{"task_id"}).AddRow("gen_old"))
+	mock.ExpectQuery("WHERE user_id=\\$1 AND status IN \\(.*completed.*failed.*\\)\\s+ORDER BY created_at ASC").
+		WillReturnRows(sqlmock.NewRows([]string{"task_id"}).AddRow("gen_old"))
 	mock.ExpectQuery("INSERT INTO generation_records").WillReturnRows(sqlmock.NewRows([]string{
-		"task_id", "user_id", "api_key_id", "media_type", "provider", "model", "prompt_preview", "status", "created_at", "updated_at",
-	}).AddRow("gen_new", int64(1), int64(2), "image", "grok", "grok-image", "prompt", service.GenerationStatusRunning, now, now))
+		"task_id", "user_id", "api_key_id", "media_type", "creator_tool", "provider", "model", "prompt_preview", "status", "created_at", "updated_at",
+	}).AddRow("gen_new", int64(1), int64(2), "image", "image", "grok", "grok-image", "prompt", service.GenerationStatusRunning, now, now))
 	mock.ExpectCommit()
 
 	record, removed, err := repo.Create(context.Background(), generationRecordCreateParams(), now.Add(-72*time.Hour), 5)
@@ -104,6 +102,6 @@ func TestGenerationRecordCreateEvictsOldestFinishedTask(t *testing.T) {
 func generationRecordCreateParams() service.CreateGenerationRecordParams {
 	return service.CreateGenerationRecordParams{
 		TaskID: "gen_new", UserID: 1, APIKeyID: 2, MediaType: "image",
-		Provider: "grok", Model: "grok-image", PromptPreview: "prompt",
+		CreatorTool: "image", Provider: "grok", Model: "grok-image", PromptPreview: "prompt",
 	}
 }

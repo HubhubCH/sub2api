@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   buildCreatorTextMessages,
@@ -12,6 +12,11 @@ describe('onlineCreatorAPI', () => {
   beforeEach(() => {
     fetchMock.mockReset()
     vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
   })
 
   it('过滤停用、过期和额度耗尽的密钥', () => {
@@ -56,7 +61,7 @@ describe('onlineCreatorAPI', () => {
       targetLanguage: '中文',
     })
 
-    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/v1/chat/completions'), {
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/v1/chat/completions'), expect.objectContaining({
       method: 'POST',
       headers: {
         Authorization: 'Bearer sk-text',
@@ -72,8 +77,60 @@ describe('onlineCreatorAPI', () => {
         temperature: 0.4,
         stream: false,
       }),
-    })
+      signal: expect.any(AbortSignal),
+    }))
     expect(result.content).toBe('生成好的商品标题')
+  })
+
+  it('gpt-5 模型通过 Responses 接口提交请求并解析 output_text', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ output_text: 'Responses 顶层文本' }),
+    })
+
+    const result = await onlineCreatorAPI.createTextCompletion({
+      apiKey: 'sk-responses',
+      model: 'gpt-5.6',
+      mode: 'product-copy',
+      prompt: '生成耳机文案',
+    })
+
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toContain('/v1/responses')
+    expect(JSON.parse(init.body)).toEqual({
+      model: 'gpt-5.6',
+      input: buildCreatorTextMessages({
+        mode: 'product-copy',
+        prompt: '生成耳机文案',
+      }),
+      stream: false,
+    })
+    expect(result.content).toBe('Responses 顶层文本')
+  })
+
+  it.each([
+    'gpt-5-codex',
+    'codex-mini-latest',
+    'o1-mini',
+    'o3',
+    'o4-mini',
+  ])('%s 模型通过 Responses 接口并解析 output content 文本', async (model) => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        output: [{ content: [{ type: 'output_text', text: `${model} 返回内容` }] }],
+      }),
+    })
+
+    const result = await onlineCreatorAPI.createTextCompletion({
+      apiKey: 'sk-responses',
+      model,
+      mode: 'chat',
+      prompt: '测试',
+    })
+
+    expect(fetchMock.mock.calls[0][0]).toContain('/v1/responses')
+    expect(result.content).toBe(`${model} 返回内容`)
   })
 
   it('保留网关错误信息', async () => {
@@ -91,95 +148,51 @@ describe('onlineCreatorAPI', () => {
     })).rejects.toThrow('余额不足')
   })
 
-  it('转写与配音仅启用明确支持 Chat Completions audio 的模型', async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        data: [
-          { id: 'gpt-4o-mini' },
-          { id: 'gpt-4o-audio-preview' },
-          { id: 'tts-1' },
-          { id: 'whisper-1' },
-          { id: 'realtime-preview' },
-          { id: 'gpt-4o-realtime-preview' },
-        ],
-      }),
+  it('把调用方取消信号传递到文本请求并返回中文取消信息', async () => {
+    let forwardedSignal: AbortSignal | undefined
+    fetchMock.mockImplementation((_url, init: RequestInit) => {
+      forwardedSignal = init.signal || undefined
+      return new Promise((_resolve, reject) => {
+        forwardedSignal?.addEventListener('abort', () => {
+          const error = new Error('aborted')
+          error.name = 'AbortError'
+          reject(error)
+        }, { once: true })
+      })
     })
+    const controller = new AbortController()
 
-    await expect(onlineCreatorAPI.listTranscriptionModels('sk-audio')).resolves.toEqual([
-      'gpt-4o-audio-preview',
-    ])
-    await expect(onlineCreatorAPI.listSpeechModels('sk-audio')).resolves.toEqual([
-      'gpt-4o-audio-preview',
-    ])
+    const request = onlineCreatorAPI.createTextCompletion({
+      apiKey: 'sk-text',
+      model: 'gpt-4o-mini',
+      mode: 'chat',
+      prompt: '测试取消',
+      signal: controller.signal,
+    })
+    controller.abort()
+
+    expect(forwardedSignal?.aborted).toBe(true)
+    await expect(request).rejects.toThrow('请求已取消')
   })
 
-  it('用 input_audio content 提交音频转写请求', async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        choices: [{ message: { content: '这是一段转写文本' } }],
-      }),
-    })
-    const file = new File([new Uint8Array([1, 2, 3])], 'voice.mp3', { type: 'audio/mpeg' })
+  it('网关长时间无响应时返回明确的中文超时信息', async () => {
+    vi.useFakeTimers()
+    fetchMock.mockImplementation((_url, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => {
+        const error = new Error('aborted')
+        error.name = 'AbortError'
+        reject(error)
+      }, { once: true })
+    }))
 
-    const result = await onlineCreatorAPI.transcribeCreatorAudio({
-      apiKey: 'sk-audio',
-      model: 'gpt-4o-audio-preview',
-      file,
-      language: '中文',
+    const request = onlineCreatorAPI.createTextCompletion({
+      apiKey: 'sk-text',
+      model: 'gpt-4o-mini',
+      mode: 'chat',
+      prompt: '测试超时',
     })
-
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
-    expect(body).toMatchObject({
-      model: 'gpt-4o-audio-preview',
-      stream: false,
-    })
-    expect(body.messages[1].content).toEqual([
-      {
-        type: 'input_audio',
-        input_audio: {
-          data: 'AQID',
-          format: 'mp3',
-        },
-      },
-    ])
-    expect(result.content).toBe('这是一段转写文本')
-  })
-
-  it('解析配音音频 base64 为 Blob', async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        choices: [{
-          message: {
-            audio: {
-              data: 'AQID',
-              transcript: '试听文案',
-            },
-          },
-        }],
-      }),
-    })
-
-    const result = await onlineCreatorAPI.synthesizeCreatorSpeech({
-      apiKey: 'sk-audio',
-      model: 'gpt-4o-audio-preview',
-      text: '生成一段配音',
-      language: '中文',
-      style: '自然清晰',
-      voice: 'alloy',
-      format: 'mp3',
-    })
-
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
-    expect(body).toMatchObject({
-      model: 'gpt-4o-audio-preview',
-      modalities: ['text', 'audio'],
-      audio: { voice: 'alloy', format: 'mp3' },
-    })
-    expect(result.transcript).toBe('试听文案')
-    expect(result.blob.type).toBe('audio/mpeg')
-    expect(result.blob.size).toBe(3)
+    const expectation = expect(request).rejects.toThrow('网关请求超时，请稍后重试')
+    await vi.runAllTimersAsync()
+    await expectation
   })
 })

@@ -27,7 +27,7 @@ const (
 	GenerationStatusSubmitted = "submitted"
 	GenerationStatusCompleted = "completed"
 	GenerationStatusFailed    = "failed"
-	GenerationRecordMaxItems  = 5
+	GenerationRecordMaxItems  = 10
 	GenerationRecordRetention = 72 * time.Hour
 	generationCleanupInterval = time.Hour
 	generationStatusInterval  = 30 * time.Second
@@ -37,7 +37,7 @@ const (
 	generationOrphanGrace     = 10 * time.Minute
 )
 
-var ErrGenerationRecordLimit = errors.New("正在生成的任务已达到 5 条上限，请等待任务完成后重试")
+var ErrGenerationRecordLimit = errors.New("正在生成的任务已达到 10 条上限，请等待任务完成后重试")
 
 type GenerationRecord struct {
 	TaskID         string          `json:"task_id"`
@@ -45,6 +45,7 @@ type GenerationRecord struct {
 	APIKeyID       int64           `json:"api_key_id"`
 	AccountID      int64           `json:"-"`
 	MediaType      string          `json:"media_type"`
+	CreatorTool    string          `json:"creator_tool,omitempty"`
 	Provider       string          `json:"provider"`
 	Model          string          `json:"model"`
 	PromptPreview  string          `json:"prompt_preview"`
@@ -58,8 +59,8 @@ type GenerationRecord struct {
 }
 
 type CreateGenerationRecordParams struct {
-	TaskID, MediaType, Provider, Model, PromptPreview string
-	UserID, APIKeyID                                  int64
+	TaskID, MediaType, CreatorTool, Provider, Model, PromptPreview string
+	UserID, APIKeyID                                               int64
 }
 
 type GenerationRecordRepository interface {

@@ -9,6 +9,8 @@ export interface ImageGenerateRequest {
   count: number
   background?: string
   outputFormat?: string
+  creatorTool?: string
+  signal?: AbortSignal
 }
 
 export interface ImageEditRequest extends ImageGenerateRequest {
@@ -34,6 +36,8 @@ export interface ImageGenerationResponse {
   [key: string]: unknown
 }
 
+const IMAGE_GATEWAY_TIMEOUT_MS = 180_000
+
 function bearerHeaders(apiKey: string) {
   return {
     Authorization: `Bearer ${apiKey.trim()}`
@@ -46,6 +50,49 @@ function cleanPayload(payload: Record<string, unknown>) {
   )
 }
 
+function isAbortError(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && (error as { name?: unknown }).name === 'AbortError')
+}
+
+async function gatewayRequest<T>(
+  path: string,
+  init: RequestInit,
+  handleResponse: (response: Response) => Promise<T>,
+  callerSignal?: AbortSignal
+): Promise<T> {
+  const controller = new AbortController()
+  let timedOut = false
+  let cancelled = false
+  const abortFromCaller = () => {
+    cancelled = true
+    controller.abort()
+  }
+
+  if (callerSignal?.aborted) abortFromCaller()
+  else callerSignal?.addEventListener('abort', abortFromCaller, { once: true })
+
+  const timeoutId = globalThis.setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, IMAGE_GATEWAY_TIMEOUT_MS)
+
+  try {
+    const response = await fetch(buildGatewayUrl(path), {
+      ...init,
+      signal: controller.signal
+    })
+    return await handleResponse(response)
+  } catch (error) {
+    if (!isAbortError(error)) throw error
+    if (timedOut) throw new Error('图片网关请求超时，请稍后重试')
+    if (cancelled) throw new Error('图片请求已取消')
+    throw new Error('图片网关请求已中止，请重试')
+  } finally {
+    globalThis.clearTimeout(timeoutId)
+    callerSignal?.removeEventListener('abort', abortFromCaller)
+  }
+}
+
 export function isImageModelName(model: string): boolean {
   const normalizedModel = model.trim().toLowerCase()
   return normalizedModel.startsWith('gpt-image-') ||
@@ -55,37 +102,37 @@ export function isImageModelName(model: string): boolean {
 }
 
 export async function listImageModels(apiKey: string): Promise<string[]> {
-  const response = await fetch(buildGatewayUrl('/v1/models'), {
+  return gatewayRequest('/v1/models', {
     headers: bearerHeaders(apiKey)
-  })
+  }, async (response) => {
+    let payload: unknown
+    try {
+      payload = await response.json()
+    } catch {
+      payload = null
+    }
 
-  let payload: unknown
-  try {
-    payload = await response.json()
-  } catch {
-    payload = null
-  }
+    if (!response.ok) {
+      const body = payload && typeof payload === 'object' ? payload as Record<string, unknown> : null
+      const nestedError = body?.error && typeof body.error === 'object'
+        ? body.error as Record<string, unknown>
+        : null
+      const message = String(nestedError?.message || body?.message || '').trim()
+      throw new Error(message || `无法读取当前 API 密钥可用的图片模型（HTTP ${response.status}）`)
+    }
 
-  if (!response.ok) {
-    const body = payload && typeof payload === 'object' ? payload as Record<string, unknown> : null
-    const nestedError = body?.error && typeof body.error === 'object'
-      ? body.error as Record<string, unknown>
-      : null
-    const message = String(nestedError?.message || body?.message || '').trim()
-    throw new Error(message || `无法读取当前 API 密钥可用的图片模型（HTTP ${response.status}）`)
-  }
+    const body = payload && typeof payload === 'object' ? payload as { data?: unknown } : null
+    const items = Array.isArray(payload) ? payload : body?.data
+    if (!Array.isArray(items)) return []
 
-  const body = payload && typeof payload === 'object' ? payload as { data?: unknown } : null
-  const items = Array.isArray(payload) ? payload : body?.data
-  if (!Array.isArray(items)) return []
-
-  return Array.from(
-    new Set(
-      items
-        .map((item) => item && typeof item === 'object' ? String((item as { id?: unknown }).id || '').trim() : '')
-        .filter((model) => model && isImageModelName(model))
+    return Array.from(
+      new Set(
+        items
+          .map((item) => item && typeof item === 'object' ? String((item as { id?: unknown }).id || '').trim() : '')
+          .filter((model) => model && isImageModelName(model))
+      )
     )
-  )
+  })
 }
 
 interface ImageSizeParameters {
@@ -274,7 +321,9 @@ async function streamImageRequest(
   path: string,
   apiKey: string,
   body: BodyInit,
-  contentType?: string
+  contentType?: string,
+  signal?: AbortSignal,
+  creatorTool?: string
 ): Promise<ImageGenerationResponse> {
   const headers: Record<string, string> = {
     ...bearerHeaders(apiKey),
@@ -282,13 +331,13 @@ async function streamImageRequest(
     'X-Save-Generation-Record': '1'
   }
   if (contentType) headers['Content-Type'] = contentType
+  if (creatorTool) headers['X-Creator-Tool'] = creatorTool
 
-  const response = await fetch(buildGatewayUrl(path), {
+  return gatewayRequest(path, {
     method: 'POST',
     headers,
     body
-  })
-  return parseImageResponse(response)
+  }, parseImageResponse, signal)
 }
 
 export async function generateImage(request: ImageGenerateRequest): Promise<ImageGenerationResponse> {
@@ -309,7 +358,9 @@ export async function generateImage(request: ImageGenerateRequest): Promise<Imag
     '/v1/images/generations',
     request.apiKey,
     JSON.stringify(payload),
-    'application/json'
+    'application/json',
+    request.signal,
+    request.creatorTool
   )
 }
 
@@ -330,7 +381,7 @@ export async function editImage(request: ImageEditRequest): Promise<ImageGenerat
   form.append('image', request.image)
   if (request.mask) form.append('mask', request.mask)
 
-  return streamImageRequest('/v1/images/edits', request.apiKey, form)
+  return streamImageRequest('/v1/images/edits', request.apiKey, form, undefined, request.signal, request.creatorTool)
 }
 
 export const imageGenerationAPI = {

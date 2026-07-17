@@ -1,7 +1,7 @@
 <template>
   <AppLayout>
-    <div class="online-creator-page" :class="{ 'overview-mode': activeTool === 'home' }">
-      <CreatorToolRail :tools="tools" :active-tool="activeTool" :disabled="submitting" @select="selectTool" />
+    <div class="online-creator-page" :class="{ 'wide-mode': activeTool === 'home' || activeTool === 'history' }">
+      <CreatorToolRail :tools="tools" :active-tool="activeTool" @select="selectTool" />
 
       <main class="creator-workspace">
         <CreatorHomePanel
@@ -32,12 +32,6 @@
             <span>平台：{{ selectedApiKey.group?.platform || '自动路由' }}</span>
           </p>
 
-          <div v-if="activeTool === 'assistant'" class="assistant-log">
-            <div v-for="message in assistantMessages" :key="message.id" :class="['message-row', message.role]">
-              {{ message.content }}
-            </div>
-          </div>
-
           <div v-if="modelWarning" class="unsupported-note">
             <span>{{ modelWarning }}</span>
             <button v-if="activeModelLoadError" type="button" data-test="creator-retry-models" @click="loadModelsForSelectedKey">重试</button>
@@ -53,7 +47,7 @@
                 </select>
               </label>
 
-              <label v-if="isTextTool || isAudioTool || activeTool === 'image-translate' || activeTool === 'product-copy'" class="field-block">
+              <label v-if="isTextTool" class="field-block">
                 <span>语言</span>
                 <select v-model="targetLanguage" class="field-control">
                   <option value="中文">中文</option>
@@ -78,26 +72,6 @@
                   <option :value="5">5 秒</option>
                   <option :value="10">10 秒</option>
                   <option :value="15">15 秒</option>
-                </select>
-              </label>
-
-              <label v-if="activeTool === 'speech'" class="field-block">
-                <span>音色</span>
-                <select v-model="speechVoice" class="field-control">
-                  <option value="alloy">alloy</option>
-                  <option value="verse">verse</option>
-                  <option value="aria">aria</option>
-                  <option value="sage">sage</option>
-                </select>
-              </label>
-
-              <label v-if="activeTool === 'speech'" class="field-block">
-                <span>风格</span>
-                <select v-model="speechStyle" class="field-control">
-                  <option value="自然清晰">自然清晰</option>
-                  <option value="电商促销">电商促销</option>
-                  <option value="温和讲解">温和讲解</option>
-                  <option value="短视频口播">短视频口播</option>
                 </select>
               </label>
 
@@ -170,6 +144,32 @@
             </div>
           </div>
 
+          <div v-if="activeTool === 'outpaint'" class="panel-block">
+            <div class="field-block">
+              <span>扩图方向</span>
+              <div class="scene-options" role="group" aria-label="扩图方向">
+                <button
+                  v-for="option in outpaintDirectionOptions"
+                  :key="option.id"
+                  type="button"
+                  :class="{ active: outpaintDirection === option.id }"
+                  :data-test="`creator-outpaint-${option.id}`"
+                  @click="outpaintDirection = option.id"
+                >
+                  {{ option.label }}
+                </button>
+              </div>
+            </div>
+            <label class="field-block outpaint-ratio">
+              <span>扩展比例</span>
+              <select v-model.number="outpaintRatio" class="field-control" data-test="creator-outpaint-ratio">
+                <option :value="0.25">25%</option>
+                <option :value="0.5">50%</option>
+                <option :value="1">100%</option>
+              </select>
+            </label>
+          </div>
+
           <div v-if="activeTool === 'product-copy'" class="panel-block">
             <div class="form-grid">
               <label class="field-block">
@@ -184,28 +184,35 @@
           </div>
 
           <div v-if="needsSingleImageUpload" class="panel-block">
-            <label class="upload-box" for="creator-image-file">
-              <input id="creator-image-file" type="file" accept="image/*" @change="handleImageFile" />
-              <span>{{ selectedImageFile ? selectedImageFile.name : imageUploadLabel }}</span>
-            </label>
-          </div>
-
-          <div v-if="activeTool === 'transcription'" class="panel-block">
-            <label class="upload-box" for="creator-audio-file">
-              <input id="creator-audio-file" data-test="creator-audio-file" type="file" accept="audio/wav,audio/mpeg,.wav,.mp3" @change="handleAudioFile" />
-              <span>{{ selectedAudioFile ? selectedAudioFile.name : '上传 WAV / MP3 音频' }}</span>
-            </label>
+            <CreatorImageUpload
+              input-id="creator-image-file"
+              data-test="creator-image-file"
+              :files="selectedImageFile ? [selectedImageFile] : []"
+              :label="imageUploadLabel"
+              @update:files="setSelectedImageFiles"
+            />
           </div>
 
           <div v-if="activeTool === 'batch-main' || activeTool === 'batch-clone'" class="panel-block">
-            <label v-if="activeTool === 'batch-clone'" class="upload-box" for="creator-reference-file">
-              <input id="creator-reference-file" type="file" accept="image/*" @change="handleReferenceFile" />
-              <span>{{ referenceImageFile ? referenceImageFile.name : '上传克隆参考图' }}</span>
-            </label>
-            <label class="upload-box" for="creator-batch-files">
-              <input id="creator-batch-files" type="file" accept="image/*" multiple @change="handleBatchFiles" />
-              <span>{{ batchProductFiles.length ? `已选择 ${batchProductFiles.length} 张商品图` : '上传最多 6 张商品图' }}</span>
-            </label>
+            <CreatorImageUpload
+              v-if="activeTool === 'batch-clone'"
+              input-id="creator-reference-file"
+              data-test="creator-reference-file"
+              :files="referenceImageFile ? [referenceImageFile] : []"
+              label="克隆参考图"
+              hint="点击或拖入一张参考图"
+              @update:files="setReferenceImageFiles"
+            />
+            <CreatorImageUpload
+              input-id="creator-batch-files"
+              data-test="creator-batch-files"
+              :files="batchProductFiles"
+              label="商品图片"
+              hint="点击或拖入图片，最多 6 张"
+              multiple
+              :max-files="6"
+              @update:files="setBatchProductFiles"
+            />
           </div>
 
           <div v-if="activeTool === 'watermark' && watermarkMode !== 'remove'" class="panel-block">
@@ -213,10 +220,15 @@
               <span>水印文字</span>
               <input v-model.trim="watermarkText" class="field-control" placeholder="输入要添加的水印文字" />
             </label>
-            <label v-else class="upload-box" for="creator-logo-file">
-              <input id="creator-logo-file" type="file" accept="image/*" @change="handleLogoFile" />
-              <span>{{ logoFile ? logoFile.name : '上传 logo 图片' }}</span>
-            </label>
+            <CreatorImageUpload
+              v-else
+              input-id="creator-logo-file"
+              data-test="creator-logo-file"
+              :files="logoFile ? [logoFile] : []"
+              label="水印 Logo"
+              hint="点击或拖入一张透明 Logo"
+              @update:files="setLogoFiles"
+            />
           </div>
 
           <form class="prompt-card" data-test="creator-submit" @submit.prevent="handleSubmit">
@@ -243,29 +255,33 @@
       </main>
 
       <CreatorResultPanel
+        v-if="activeTool !== 'home' && activeTool !== 'history'"
         :output="output"
-        :records="records"
+        :records="recordsForActiveTool"
+        :local-records="localRecordsForActiveTool"
         :record-error="recordLoadError"
         :loading="submitting"
         :error="errorMessage"
         :status="statusMessage"
         @restore="restoreRecord"
+        @restore-local="restoreLocalRecord"
         @copy="copyText"
-        @download-audio="downloadAudio"
         @download-batch="downloadBatch"
         @download-video="downloadVideo"
         @reload-records="loadRecords"
+        @view-all="selectTool('history')"
       />
     </div>
   </AppLayout>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
 import CreatorHomePanel, { type CreatorRecentItem } from '@/components/user/creator/CreatorHomePanel.vue'
 import CreatorHistoryPanel, { type CreatorLocalRecord } from '@/components/user/creator/CreatorHistoryPanel.vue'
+import CreatorImageUpload from '@/components/user/creator/CreatorImageUpload.vue'
 import CreatorKeyPicker from '@/components/user/creator/CreatorKeyPicker.vue'
 import CreatorResultPanel from '@/components/user/creator/CreatorResultPanel.vue'
 import CreatorToolRail from '@/components/user/creator/CreatorToolRail.vue'
@@ -282,16 +298,15 @@ type CreatorToolId =
   | 'home'
   | 'image'
   | 'edit'
-  | 'assistant'
   | 'product-copy'
-  | 'image-translate'
+  | 'outpaint'
   | 'batch-main'
   | 'batch-clone'
   | 'watermark'
   | 'video'
-  | 'transcription'
-  | 'speech'
   | 'history'
+
+type CreatorWorkToolId = Exclude<CreatorToolId, 'home' | 'history'>
 
 const props = withDefaults(defineProps<{ initialTool?: string }>(), {
   initialTool: 'home',
@@ -301,13 +316,13 @@ interface CreatorToolConfig {
   id: CreatorToolId
   label: string
   badge: string
-  icon: 'home' | 'chat' | 'edit' | 'globe' | 'sparkles' | 'grid' | 'copy' | 'upload' | 'play' | 'cloud' | 'clock'
+  icon: 'home' | 'chat' | 'edit' | 'globe' | 'sparkles' | 'grid' | 'copy' | 'upload' | 'play' | 'cloud' | 'clock' | 'arrowsUpDown'
   action: string
   placeholder: string
 }
 
 interface CreatorOutput {
-  type: 'text' | 'image' | 'video' | 'audio' | 'batch'
+  type: 'text' | 'image' | 'video' | 'batch'
   content: string
   url?: string
   batchId?: string
@@ -323,28 +338,52 @@ interface CreatorOutput {
   }>
 }
 
-interface AssistantMessage {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
+interface CreatorTaskState {
+  output: CreatorOutput | null
+  loading: boolean
+  running: boolean
+  status: string
+  error: string
+  version: number
+  controller: AbortController | null
 }
 
-type CreatorModelCapability = 'text' | 'image' | 'video' | 'batch' | 'transcription' | 'speech'
+interface CreatorTaskContext {
+  toolId: CreatorWorkToolId
+  state: CreatorTaskState
+  version: number
+}
+
+interface CreatorBatchRecordContext {
+  apiKey: string
+  job: batchImageAPI.BatchImageJob
+  toolId: 'batch-main' | 'batch-clone'
+}
+
+type CreatorModelCapability = 'text' | 'image' | 'video' | 'batch'
 
 const tools: CreatorToolConfig[] = [
   { id: 'home', label: '首页', badge: '总览', icon: 'home', action: '进入', placeholder: '' },
   { id: 'image', label: 'AI 生图', badge: '图片', icon: 'sparkles', action: '生成图片', placeholder: '描述画面、主体、背景、光影和风格' },
   { id: 'edit', label: '图片编辑', badge: '图片编辑', icon: 'edit', action: '编辑图片', placeholder: '说明需要修改的区域、风格和目标效果' },
-  { id: 'assistant', label: 'AI 助手', badge: '对话', icon: 'chat', action: '发送', placeholder: '继续当前对话' },
   { id: 'product-copy', label: '商品文案', badge: '电商', icon: 'edit', action: '生成文案', placeholder: '补充目标人群、价格策略或发布要求' },
-  { id: 'image-translate', label: '图片翻译', badge: '本地化', icon: 'globe', action: '翻译图片', placeholder: '保留构图/风格，仅将图中文字本地化为目标语言' },
+  { id: 'outpaint', label: '图片扩图', badge: '扩图', icon: 'arrowsUpDown', action: '开始扩图', placeholder: '补充希望延展的场景、光影或环境（可选）' },
   { id: 'batch-main', label: '批量主图', badge: '批量', icon: 'grid', action: '提交批量任务', placeholder: '统一要求，例如白底、商业摄影、突出商品质感' },
   { id: 'batch-clone', label: '批量克隆', badge: '批量', icon: 'copy', action: '提交克隆任务', placeholder: '统一克隆要求，例如保留参考图构图与光影' },
   { id: 'watermark', label: '水印处理', badge: '水印', icon: 'upload', action: '处理水印', placeholder: '去除时说明水印位置；添加时可补充透明度/位置' },
   { id: 'video', label: 'AI 视频', badge: '视频', icon: 'play', action: '生成视频', placeholder: '描述镜头、运动、主体和画面风格' },
-  { id: 'transcription', label: '语音转写', badge: '音频', icon: 'cloud', action: '开始转写', placeholder: '可补充说话人、领域词或格式要求' },
-  { id: 'speech', label: 'AI 配音', badge: '音频', icon: 'cloud', action: '生成配音', placeholder: '输入需要配音的文本' },
   { id: 'history', label: '历史记录', badge: '记录', icon: 'clock', action: '查看', placeholder: '' },
+]
+
+const workToolIds: CreatorWorkToolId[] = [
+  'image',
+  'edit',
+  'product-copy',
+  'outpaint',
+  'batch-main',
+  'batch-clone',
+  'watermark',
+  'video',
 ]
 
 const imageSceneOptions = [
@@ -352,6 +391,14 @@ const imageSceneOptions = [
   { id: 'lifestyle', label: '商品场景图', directive: '真实生活方式场景，商品为视觉主体，环境与用途自然匹配。' },
   { id: 'poster', label: '社媒海报', directive: '适合社交媒体发布的海报构图，主体突出，留出清晰文案空间。' },
   { id: 'portrait', label: '人物摄影', directive: '自然人物摄影，肤色真实，光影柔和，背景简洁。' },
+] as const
+
+const outpaintDirectionOptions = [
+  { id: 'all', label: '四周' },
+  { id: 'left', label: '向左' },
+  { id: 'right', label: '向右' },
+  { id: 'top', label: '向上' },
+  { id: 'bottom', label: '向下' },
 ] as const
 
 function normalizeCreatorToolId(toolId?: string): CreatorToolId {
@@ -366,8 +413,7 @@ const textModels = ref<string[]>([])
 const imageModels = ref<string[]>([])
 const videoModels = ref<string[]>([])
 const batchModels = ref<string[]>([])
-const transcriptionModels = ref<string[]>([])
-const speechModels = ref<string[]>([])
+const batchAPIAvailable = ref(false)
 const modelLoadErrors = ref<Partial<Record<CreatorModelCapability, string>>>({})
 const selectedModel = ref('')
 const targetLanguage = ref('中文')
@@ -376,53 +422,66 @@ const imageScene = ref<(typeof imageSceneOptions)[number]['id'] | ''>('')
 const imageQuality = ref('high')
 const imageStyle = ref('auto')
 const imageBackground = ref('auto')
+const outpaintDirection = ref<(typeof outpaintDirectionOptions)[number]['id']>('all')
+const outpaintRatio = ref(0.5)
 const videoDuration = ref(5)
 const prompt = ref('')
 const productName = ref('')
 const productInfo = ref('')
 const productPlatform = ref('闲鱼')
-const speechVoice = ref('alloy')
-const speechStyle = ref('自然清晰')
 const watermarkMode = ref<'remove' | 'text' | 'logo'>('remove')
 const watermarkText = ref('')
 const selectedImageFile = ref<File | null>(null)
 const referenceImageFile = ref<File | null>(null)
 const logoFile = ref<File | null>(null)
 const batchProductFiles = ref<File[]>([])
-const selectedAudioFile = ref<File | null>(null)
-const output = ref<CreatorOutput | null>(null)
 const records = ref<GenerationRecord[]>([])
 const recordLoadError = ref('')
 const localRecords = ref<CreatorLocalRecord[]>([])
-const assistantMessages = ref<AssistantMessage[]>([])
-const submitting = ref(false)
-const statusMessage = ref('')
-const errorMessage = ref('')
-const audioOutputUrl = ref('')
-let audioOutputBlob: Blob | null = null
+const taskStates = reactive<Record<CreatorWorkToolId, CreatorTaskState>>(
+  Object.fromEntries(workToolIds.map((toolId) => [toolId, {
+    output: null,
+    loading: false,
+    running: false,
+    status: '',
+    error: '',
+    version: 0,
+    controller: null,
+  }])) as Record<CreatorWorkToolId, CreatorTaskState>,
+)
 let modelRequestVersion = 0
-let operationVersion = 0
-let videoPollTimer: number | null = null
-let batchPollTimer: number | null = null
+let restoreRequestVersion = 0
+let recordRequestVersion = 0
+const videoPollTimers = new Map<CreatorWorkToolId, number>()
+const batchPollTimers = new Map<CreatorWorkToolId, number>()
 const objectUrls = new Set<string>()
 const batchAPIKeys = new Map<string, string>()
+const batchRecordContexts = new Map<string, CreatorBatchRecordContext>()
 const videoTasks = new Map<string, { apiKey: string; provider: GatewayVideoProvider; model: string }>()
 const POLL_INTERVAL_MS = 5000
 const MAX_POLL_RETRIES = 3
 const MAX_POLL_ATTEMPTS = 60
+const GATEWAY_REQUEST_TIMEOUT_MS = 180000
+const BATCH_REQUEST_TIMEOUT_MS = 10 * 60 * 1000
+const GENERATION_RECORD_RETENTION_MS = 72 * 60 * 60 * 1000
+const BATCH_RECORD_QUERY_CONCURRENCY = 4
 
 const activeToolConfig = computed(() => tools.find((tool) => tool.id === activeTool.value) || tools[0])
+const activeTaskState = computed(() => isWorkTool(activeTool.value) ? taskStates[activeTool.value] : null)
+const output = computed(() => activeTaskState.value?.output || null)
+const submitting = computed(() => Boolean(activeTaskState.value?.loading || activeTaskState.value?.running))
+const statusMessage = computed(() => activeTaskState.value?.status || '')
+const errorMessage = computed(() => activeTaskState.value?.error || '')
 const homeTools = computed(() => tools.filter((tool) => tool.id !== 'home' && tool.id !== 'history'))
 const selectedApiKey = computed(() => usableKeys.value.find((key) => String(key.id) === selectedKeyId.value) || null)
 const usesGrokImageModel = computed(() => isGrokImageModelName(selectedModel.value))
 const usableKeys = computed(() => apiKeys.value.filter((key) => isUsableCreatorKey(key)))
-const isTextTool = computed(() => activeTool.value === 'assistant' || activeTool.value === 'product-copy')
-const isImageTool = computed(() => ['image', 'edit', 'image-translate', 'watermark'].includes(activeTool.value))
-const isAudioTool = computed(() => ['transcription', 'speech'].includes(activeTool.value))
+const isTextTool = computed(() => activeTool.value === 'product-copy')
+const isImageTool = computed(() => ['image', 'edit', 'outpaint', 'watermark'].includes(activeTool.value))
 const needsModel = computed(() => !['home', 'history'].includes(activeTool.value) && !(activeTool.value === 'watermark' && watermarkMode.value !== 'remove'))
-const needsSingleImageUpload = computed(() => ['edit', 'image-translate', 'watermark'].includes(activeTool.value))
+const needsSingleImageUpload = computed(() => ['edit', 'outpaint', 'watermark'].includes(activeTool.value))
 const imageUploadLabel = computed(() => {
-  if (activeTool.value === 'image-translate') return '上传需要图片翻译的原图'
+  if (activeTool.value === 'outpaint') return '上传需要扩展画布的原图'
   if (activeTool.value === 'watermark') return '上传需要处理水印的图片'
   return '上传需要编辑的图片'
 })
@@ -431,13 +490,9 @@ const modelOptions = computed(() => {
   if (isImageTool.value) return imageModels.value
   if (activeTool.value === 'video') return videoModels.value
   if (activeTool.value === 'batch-main' || activeTool.value === 'batch-clone') return batchModels.value
-  if (activeTool.value === 'transcription') return transcriptionModels.value
-  if (activeTool.value === 'speech') return speechModels.value
   return []
 })
 const promptLabel = computed(() => {
-  if (activeTool.value === 'assistant') return '对话内容'
-  if (activeTool.value === 'speech') return '配音文本'
   if (activeTool.value === 'batch-main' || activeTool.value === 'batch-clone') return '统一要求'
   return '创作提示词'
 })
@@ -447,25 +502,21 @@ const activeModelLoadError = computed(() => {
   else if (isImageTool.value) capability = 'image'
   else if (activeTool.value === 'video') capability = 'video'
   else if (activeTool.value === 'batch-main' || activeTool.value === 'batch-clone') capability = 'batch'
-  else if (activeTool.value === 'transcription') capability = 'transcription'
-  else if (activeTool.value === 'speech') capability = 'speech'
   return capability ? modelLoadErrors.value[capability] || '' : ''
 })
 const modelWarning = computed(() => {
   if (!selectedApiKey.value) return '请先选择可用 API 密钥。'
   if (activeModelLoadError.value) return `模型加载失败：${activeModelLoadError.value}`
-  if (activeTool.value === 'transcription' && transcriptionModels.value.length === 0) return '当前密钥暂无可用转写模型。'
-  if (activeTool.value === 'speech' && speechModels.value.length === 0) return '当前密钥暂无可用配音模型。'
   if (needsModel.value && modelOptions.value.length === 0) return '当前密钥暂无该工具可用模型。'
   return ''
 })
 const canSubmit = computed(() => {
   if (!selectedApiKey.value?.key || submitting.value || activeTool.value === 'home' || activeTool.value === 'history') return false
   if (needsModel.value && !selectedModel.value && activeTool.value !== 'batch-main' && activeTool.value !== 'batch-clone') return false
-  if (activeTool.value === 'assistant') return prompt.value.length > 0
   if (activeTool.value === 'product-copy') return Boolean(productName.value && productInfo.value)
   if (activeTool.value === 'image') return prompt.value.length > 0
-  if (activeTool.value === 'edit' || activeTool.value === 'image-translate') return Boolean(selectedImageFile.value && prompt.value)
+  if (activeTool.value === 'edit') return Boolean(selectedImageFile.value && prompt.value)
+  if (activeTool.value === 'outpaint') return Boolean(selectedImageFile.value)
   if (activeTool.value === 'batch-main') return batchProductFiles.value.length > 0 && batchModels.value.length > 0
   if (activeTool.value === 'batch-clone') return Boolean(referenceImageFile.value && batchProductFiles.value.length > 0 && batchModels.value.length > 0)
   if (activeTool.value === 'watermark') {
@@ -475,19 +526,27 @@ const canSubmit = computed(() => {
     return Boolean(prompt.value)
   }
   if (activeTool.value === 'video') return prompt.value.length > 0
-  if (activeTool.value === 'transcription') return Boolean(selectedAudioFile.value)
-  if (activeTool.value === 'speech') return prompt.value.length > 0
   return false
 })
 const recentItems = computed<CreatorRecentItem[]>(() => {
-  const backend = records.value.slice(0, 4).map((record) => ({
+  const backend = records.value.slice(0, 3).map((record) => ({
     id: record.task_id,
     title: record.model || record.provider,
-    kind: record.media_type,
+    kind: creatorToolLabel(record.creator_tool) || (record.media_type === 'video' ? '视频' : '图片'),
     preview: record.prompt_preview || '后端生成记录',
   }))
-  return [...localRecords.value.slice(0, 4), ...backend].slice(0, 6)
+  return [...localRecords.value.slice(0, 3), ...backend].slice(0, 3)
 })
+
+function creatorToolLabel(toolId?: string): string {
+  return tools.find((tool) => tool.id === toolId)?.label || ''
+}
+const recordsForActiveTool = computed(() => isWorkTool(activeTool.value)
+  ? records.value.filter((record) => record.creator_tool === activeTool.value)
+  : records.value)
+const localRecordsForActiveTool = computed(() => isWorkTool(activeTool.value)
+  ? localRecords.value.filter((record) => record.toolId === activeTool.value)
+  : localRecords.value)
 const estimatedImageTier = computed(() => {
   const [width, height] = imageSize.value.split('x').map(Number)
   return Math.max(width || 1024, height || 1024) > 1024 ? '2K' : '1K'
@@ -506,14 +565,8 @@ const estimatedImageCost = computed(() => {
 const estimatedImageCostLabel = computed(() => estimatedImageCost.value == null ? '--' : `约 $${estimatedImageCost.value.toFixed(4)}`)
 
 function selectTool(toolId: string) {
-  if (submitting.value) return
-  operationVersion += 1
-  clearPollingTimers()
-  releaseObjectUrls()
+  restoreRequestVersion += 1
   activeTool.value = normalizeCreatorToolId(toolId)
-  errorMessage.value = ''
-  statusMessage.value = ''
-  output.value = null
   syncSelectedModel()
 }
 
@@ -530,13 +583,16 @@ function resetCurrentInput() {
   referenceImageFile.value = null
   logoFile.value = null
   batchProductFiles.value = []
-  selectedAudioFile.value = null
   imageScene.value = ''
   imageQuality.value = 'high'
   imageStyle.value = 'auto'
   imageBackground.value = 'auto'
-  errorMessage.value = ''
-  statusMessage.value = ''
+  outpaintDirection.value = 'all'
+  outpaintRatio.value = 0.5
+  if (activeTaskState.value) {
+    activeTaskState.value.error = ''
+    activeTaskState.value.status = ''
+  }
 }
 
 function defaultImageUnitPrice(model: string, tier: string): number {
@@ -560,30 +616,38 @@ function buildImagePrompt(sourcePrompt: string): string {
   return [scene?.directive, sourcePrompt, styleDirective].filter(Boolean).join('\n')
 }
 
-function handleImageFile(event: Event) {
-  selectedImageFile.value = fileFromEvent(event)
+function isWorkTool(toolId: CreatorToolId): toolId is CreatorWorkToolId {
+  return toolId !== 'home' && toolId !== 'history'
 }
 
-function handleReferenceFile(event: Event) {
-  referenceImageFile.value = fileFromEvent(event)
+function isTaskCurrent(task: CreatorTaskContext): boolean {
+  return task.state.version === task.version
 }
 
-function handleLogoFile(event: Event) {
-  logoFile.value = fileFromEvent(event)
+function cancelAllRequests() {
+  for (const state of Object.values(taskStates)) {
+    state.version += 1
+    state.controller?.abort()
+    state.controller = null
+    state.loading = false
+    state.running = false
+  }
 }
 
-function handleAudioFile(event: Event) {
-  selectedAudioFile.value = fileFromEvent(event)
+function setSelectedImageFiles(files: File[]) {
+  selectedImageFile.value = files[0] || null
 }
 
-function handleBatchFiles(event: Event) {
-  const input = event.target as HTMLInputElement
-  batchProductFiles.value = Array.from(input.files || []).slice(0, 6)
+function setReferenceImageFiles(files: File[]) {
+  referenceImageFile.value = files[0] || null
 }
 
-function fileFromEvent(event: Event): File | null {
-  const input = event.target as HTMLInputElement
-  return input.files?.[0] || null
+function setLogoFiles(files: File[]) {
+  logoFile.value = files[0] || null
+}
+
+function setBatchProductFiles(files: File[]) {
+  batchProductFiles.value = files.slice(0, 6)
 }
 
 function extractErrorMessage(error: unknown, fallback: string): string {
@@ -611,34 +675,32 @@ async function loadModelsForSelectedKey() {
   imageModels.value = []
   videoModels.value = []
   batchModels.value = []
-  transcriptionModels.value = []
-  speechModels.value = []
+  batchAPIAvailable.value = false
   modelLoadErrors.value = {}
   selectedModel.value = ''
   if (!apiKey) return
 
-  const [texts, images, videos, batches, transcriptions, speeches] = await Promise.allSettled([
+  const [texts, images, videos, batches] = await Promise.allSettled([
     onlineCreatorAPI.listTextModels(apiKey),
     imageGenerationAPI.listImageModels(apiKey),
     videoGenerationAPI.listVideoModels(apiKey),
     batchImageAPI.listBatchImageModels(apiKey),
-    onlineCreatorAPI.listTranscriptionModels(apiKey),
-    onlineCreatorAPI.listSpeechModels(apiKey),
   ])
   if (requestVersion !== modelRequestVersion || selectedApiKey.value?.key !== apiKey) return
   textModels.value = texts.status === 'fulfilled' ? texts.value : []
   imageModels.value = images.status === 'fulfilled' ? images.value : []
   videoModels.value = videos.status === 'fulfilled' ? videos.value : []
-  batchModels.value = batches.status === 'fulfilled' ? batches.value.data.map((item) => item.id) : []
-  transcriptionModels.value = transcriptions.status === 'fulfilled' ? transcriptions.value : []
-  speechModels.value = speeches.status === 'fulfilled' ? speeches.value : []
+  batchAPIAvailable.value = batches.status === 'fulfilled'
+  batchModels.value = batches.status === 'fulfilled'
+    ? batches.value.data.map((item) => item.id)
+    : images.status === 'fulfilled' ? images.value : []
   const errors: Partial<Record<CreatorModelCapability, string>> = {}
   if (texts.status === 'rejected') errors.text = extractErrorMessage(texts.reason, '文本模型加载失败')
   if (images.status === 'rejected') errors.image = extractErrorMessage(images.reason, '图片模型加载失败')
   if (videos.status === 'rejected') errors.video = extractErrorMessage(videos.reason, '视频模型加载失败')
-  if (batches.status === 'rejected') errors.batch = extractErrorMessage(batches.reason, '批量模型加载失败')
-  if (transcriptions.status === 'rejected') errors.transcription = extractErrorMessage(transcriptions.reason, '转写模型加载失败')
-  if (speeches.status === 'rejected') errors.speech = extractErrorMessage(speeches.reason, '配音模型加载失败')
+  if (batches.status === 'rejected' && images.status === 'rejected') {
+    errors.batch = extractErrorMessage(batches.reason, '批量与图片模型加载失败')
+  }
   modelLoadErrors.value = errors
   syncSelectedModel()
 }
@@ -659,56 +721,115 @@ async function loadUserGroupRates() {
   }
 }
 
-async function loadRecords() {
-  try {
-    records.value = await generationRecordsAPI.list(8)
-    recordLoadError.value = ''
-  } catch (error) {
-    recordLoadError.value = extractErrorMessage(error, '创作记录加载失败')
+function batchRecordTool(job: batchImageAPI.BatchImageJob): 'batch-main' | 'batch-clone' | null {
+  const taskName = job.task_name.trim().toLowerCase()
+  if (taskName.startsWith('batch-main-')) return 'batch-main'
+  if (taskName.startsWith('batch-clone-')) return 'batch-clone'
+  return null
+}
+
+function batchRecordCreatedAt(value: number): string {
+  const timestamp = Number(value)
+  const milliseconds = timestamp > 1_000_000_000_000 ? timestamp : timestamp * 1000
+  const date = new Date(milliseconds)
+  return Number.isNaN(date.getTime()) ? new Date(0).toISOString() : date.toISOString()
+}
+
+function generationRecordFromBatch(job: batchImageAPI.BatchImageJob, apiKeyID: number, toolId: 'batch-main' | 'batch-clone'): GenerationRecord {
+  return {
+    task_id: job.id,
+    api_key_id: apiKeyID,
+    media_type: 'image',
+    creator_tool: toolId,
+    provider: job.provider,
+    model: job.model,
+    prompt_preview: `${toolId === 'batch-clone' ? '批量克隆' : '批量主图'}，共 ${job.item_count} 张`,
+    status: job.status,
+    result: null,
+    created_at: batchRecordCreatedAt(job.created_at),
   }
+}
+
+async function loadBatchRecordContexts(
+  keys: ApiKey[],
+  from: string,
+  cutoffTime: number,
+  requestVersion: number,
+): Promise<CreatorBatchRecordContext[]> {
+  const contexts: CreatorBatchRecordContext[] = []
+  for (let offset = 0; offset < keys.length; offset += BATCH_RECORD_QUERY_CONCURRENCY) {
+    const keyGroup = keys.slice(offset, offset + BATCH_RECORD_QUERY_CONCURRENCY)
+    const results = await Promise.allSettled(keyGroup.map(async (key) => ({
+      key,
+      response: await batchImageAPI.listBatchImageJobs(key.key, { limit: 10, from }),
+    })))
+    if (requestVersion !== recordRequestVersion) return []
+    for (const result of results) {
+      if (result.status !== 'fulfilled') continue
+      for (const job of result.value.response.data) {
+        const toolId = batchRecordTool(job)
+        if (!toolId || Date.parse(batchRecordCreatedAt(job.created_at)) < cutoffTime) continue
+        contexts.push({ apiKey: result.value.key.key, job, toolId })
+      }
+    }
+  }
+  return contexts
+}
+
+async function loadRecords() {
+  const requestVersion = ++recordRequestVersion
+  const keySnapshot = [...usableKeys.value]
+  const cutoffTime = Date.now() - GENERATION_RECORD_RETENTION_MS
+  const from = new Date(cutoffTime).toISOString()
+  const generationRequest = generationRecordsAPI.list(10).then(
+    (value) => ({ status: 'fulfilled' as const, value }),
+    (reason: unknown) => ({ status: 'rejected' as const, reason }),
+  )
+  const batchRequest = loadBatchRecordContexts(keySnapshot, from, cutoffTime, requestVersion)
+  const [generationResult, loadedBatchContexts] = await Promise.all([generationRequest, batchRequest])
+  if (requestVersion !== recordRequestVersion) return
+
+  const generationItems = generationResult.status === 'fulfilled' ? generationResult.value : []
+  const batchItems: GenerationRecord[] = []
+  batchRecordContexts.clear()
+  for (const context of loadedBatchContexts) {
+    const key = keySnapshot.find((item) => item.key === context.apiKey)
+    batchAPIKeys.set(context.job.id, context.apiKey)
+    batchRecordContexts.set(context.job.id, context)
+    batchItems.push(generationRecordFromBatch(context.job, Number(key?.id) || 0, context.toolId))
+  }
+  records.value = [...generationItems, ...batchItems]
+    .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))
+    .slice(0, 10)
+  recordLoadError.value = generationResult.status === 'rejected'
+    ? extractErrorMessage(generationResult.reason, '创作记录加载失败')
+    : ''
 }
 
 function addLocalRecord(record: Omit<CreatorLocalRecord, 'id'>) {
-  localRecords.value = [{ ...record, id: `local-${Date.now()}` }, ...localRecords.value].slice(0, 20)
+  const createdAt = new Date().toISOString()
+  localRecords.value = [{ ...record, createdAt, id: `local-${Date.now()}` }, ...localRecords.value].slice(0, 20)
 }
 
-async function submitAssistant(apiKey: string) {
-  const userMessage: AssistantMessage = { id: `user-${Date.now()}`, role: 'user', content: prompt.value }
-  assistantMessages.value.push(userMessage)
-  try {
-    const result = await onlineCreatorAPI.createTextCompletion({
-      apiKey,
-      model: selectedModel.value,
-      mode: 'chat',
-      prompt: assistantMessages.value.map((message) => `${message.role === 'user' ? '用户' : '助手'}：${message.content}`).join('\n'),
-      targetLanguage: targetLanguage.value,
-    })
-    assistantMessages.value.push({ id: `assistant-${Date.now()}`, role: 'assistant', content: result.content })
-    output.value = { type: 'text', content: result.content }
-    addLocalRecord({ title: 'AI 助手', kind: '文本', preview: prompt.value, content: result.content, outputType: 'text' })
-    prompt.value = ''
-    statusMessage.value = '回复已生成'
-  } catch (error) {
-    assistantMessages.value = assistantMessages.value.filter((message) => message.id !== userMessage.id)
-    throw error
-  }
-}
-
-async function submitProductCopy(apiKey: string) {
-  const content = `商品名：${productName.value}\n商品信息：${productInfo.value}\n目标平台：${productPlatform.value}\n补充要求：${prompt.value || '无'}`
+async function submitProductCopy(apiKey: string, signal: AbortSignal, task: CreatorTaskContext) {
+  const submittedName = productName.value
+  const submittedInfo = productInfo.value
+  const content = `商品名：${submittedName}\n商品信息：${submittedInfo}\n目标平台：${productPlatform.value}\n补充要求：${prompt.value || '无'}`
   const result = await onlineCreatorAPI.createTextCompletion({
     apiKey,
     model: selectedModel.value,
     mode: 'product-copy',
     prompt: content,
     targetLanguage: targetLanguage.value,
+    signal,
   })
-  output.value = { type: 'text', content: result.content }
-  addLocalRecord({ title: productName.value, kind: '商品文案', preview: productInfo.value, content: result.content, outputType: 'text' })
-  statusMessage.value = '商品文案已生成'
+  if (!isTaskCurrent(task)) return
+  task.state.output = { type: 'text', content: result.content }
+  addLocalRecord({ toolId: 'product-copy', title: submittedName, kind: '商品文案', preview: submittedInfo, content: result.content, outputType: 'text' })
+  task.state.status = '商品文案已生成'
 }
 
-async function submitImage(apiKey: string) {
+async function submitImage(apiKey: string, signal: AbortSignal, task: CreatorTaskContext) {
   const request = {
     apiKey,
     model: selectedModel.value,
@@ -717,36 +838,64 @@ async function submitImage(apiKey: string) {
     quality: imageQuality.value,
     count: 1,
     outputFormat: 'png',
+    creatorTool: task.toolId,
+    signal,
     ...(imageBackground.value === 'auto' ? {} : { background: imageBackground.value }),
   }
-  output.value = imageOutputFromResponse(await imageGenerationAPI.generateImage(request))
-  statusMessage.value = '图片已生成'
+  const response = await imageGenerationAPI.generateImage(request)
+  if (!isTaskCurrent(task)) return
+  task.state.output = imageOutputFromResponse(response)
+  task.state.status = '图片已生成'
 }
 
-async function submitEdit(apiKey: string) {
-  if (!selectedImageFile.value) throw new Error('请先上传图片')
-  const editPrompt = activeTool.value === 'image-translate'
-    ? `保留原图构图、风格、主体、色彩和材质，仅将图中文字本地化为${targetLanguage.value}。补充要求：${prompt.value}`
-    : prompt.value
-  output.value = imageOutputFromResponse(await imageGenerationAPI.editImage({
+async function submitEdit(apiKey: string, signal: AbortSignal, task: CreatorTaskContext) {
+  const sourceFile = selectedImageFile.value
+  const model = selectedModel.value
+  const submittedPrompt = prompt.value
+  const submittedSize = imageSize.value
+  const submittedDirection = outpaintDirection.value
+  const submittedRatio = outpaintRatio.value
+  if (!sourceFile) throw new Error('请先上传图片')
+  let sourceImage = sourceFile
+  let requestedSize = submittedSize
+  let editPrompt = submittedPrompt
+  if (task.toolId === 'outpaint') {
+    const expanded = await createOutpaintImage(sourceImage, submittedDirection, submittedRatio)
+    if (!isTaskCurrent(task)) return
+    sourceImage = expanded.file
+    requestedSize = expanded.size
+    const directionLabel = outpaintDirectionOptions.find((option) => option.id === submittedDirection)?.label || '四周'
+    editPrompt = `扩展原图画布，严格保持原图已有区域的主体、构图、文字、色彩和细节不变，仅自然补全透明扩展区域。扩图方向：${directionLabel}；补充要求：${submittedPrompt || '延续原有场景、光影和透视'}`
+  }
+  const response = await imageGenerationAPI.editImage({
     apiKey,
-    model: selectedModel.value,
+    model,
     prompt: editPrompt,
-    size: imageSize.value,
+    size: requestedSize,
     quality: 'high',
     count: 1,
     outputFormat: 'png',
-    image: selectedImageFile.value,
-  }))
-  statusMessage.value = activeTool.value === 'image-translate' ? '图片文字已本地化' : '图片编辑完成'
+    image: sourceImage,
+    creatorTool: task.toolId,
+    signal,
+  })
+  if (!isTaskCurrent(task)) return
+  task.state.output = imageOutputFromResponse(response)
+  task.state.status = task.toolId === 'outpaint' ? '图片扩展完成' : '图片编辑完成'
 }
 
-async function submitBatch(apiKey: string, toolId: 'batch-main' | 'batch-clone', version: number) {
+async function submitBatch(apiKey: string, task: CreatorTaskContext, signal: AbortSignal) {
+  const toolId = task.toolId as 'batch-main' | 'batch-clone'
   const referenceFile = referenceImageFile.value
   const productFiles = [...batchProductFiles.value]
   const taskPrompt = prompt.value
   const taskImageSize = imageSize.value
-  const taskModel = selectedModel.value || batchModels.value[0]
+  const taskModel = selectedModel.value || batchModels.value[0] || imageModels.value[0]
+  if (!taskModel) throw new Error('当前密钥暂无可用图片模型')
+  if (!batchAPIAvailable.value) {
+    await fallbackBatchWithImageEdits(apiKey, new Error('批量接口未启用'), toolId, referenceFile, productFiles, taskPrompt, taskImageSize, taskModel, task, signal)
+    return
+  }
   const referenceImages = referenceFile
     ? [await fileToBatchReference(referenceFile)]
     : []
@@ -759,7 +908,7 @@ async function submitBatch(apiKey: string, toolId: 'batch-main' | 'batch-clone',
       await fileToBatchReference(file),
     ],
   })))
-  if (version !== operationVersion) return
+  if (!isTaskCurrent(task)) return
   const idempotencyKey = `${toolId}-${Date.now()}`
   try {
     const job = await batchImageAPI.submitBatchImageJob(apiKey, {
@@ -771,121 +920,142 @@ async function submitBatch(apiKey: string, toolId: 'batch-main' | 'batch-clone',
       metadata: { source: 'online-creator', tool: toolId },
     }, idempotencyKey)
     batchAPIKeys.set(job.id, apiKey)
-    output.value = {
+    task.state.output = {
       type: 'batch',
       content: `批量任务已提交：${job.id}\n状态：${job.status}\n数量：${job.item_count}`,
       batchId: job.id,
       batchReady: false,
     }
-    statusMessage.value = '批量任务已提交'
-    scheduleBatchPoll(apiKey, job.id, version)
+    task.state.status = '批量任务已提交'
+    task.state.running = true
+    scheduleBatchPoll(apiKey, job.id, task)
   } catch (error) {
-    if (version !== operationVersion) return
-    if (toolId !== 'batch-clone' || !referenceFile || !isExplicitBatchUnsupported(error)) throw error
-    await fallbackBatchCloneWithImageEdits(apiKey, error, referenceFile, productFiles, taskPrompt, taskImageSize, version)
+    if (!isTaskCurrent(task)) return
+    if (!isExplicitBatchUnsupported(error)) throw error
+    await fallbackBatchWithImageEdits(apiKey, error, toolId, referenceFile, productFiles, taskPrompt, taskImageSize, taskModel, task, signal)
   }
 }
 
 function isExplicitBatchUnsupported(error: unknown): boolean {
   const record = error && typeof error === 'object' ? error as { status?: unknown; message?: unknown } : null
   const status = Number(record?.status || 0)
+  const message = String(record?.message || '')
   if ([404, 405, 501].includes(status)) return true
-  if (![400, 422].includes(status)) return false
-  return /(reference|参考图|not supported|unsupported|不支持)/i.test(String(record?.message || ''))
+  if (status === 403 && /(batch|批量|disabled|未启用|不支持)/i.test(message)) return true
+  if (![400, 422].includes(status)) return /(batch image API is disabled|批量接口未启用)/i.test(message)
+  return /(reference|参考图|not supported|unsupported|不支持|disabled|未启用)/i.test(message)
 }
 
-async function fallbackBatchCloneWithImageEdits(
+async function fallbackBatchWithImageEdits(
   apiKey: string,
   cause: unknown,
-  referenceFile: File,
+  toolId: 'batch-main' | 'batch-clone',
+  referenceFile: File | null,
   productFiles: File[],
   taskPrompt: string,
   taskImageSize: string,
-  version: number,
+  taskModel: string,
+  task: CreatorTaskContext,
+  signal: AbortSignal,
 ) {
-  const lines: string[] = [`批量接口不可用，已改用逐张图片编辑。原因：${extractErrorMessage(cause, '批量接口提交失败')}`]
+  if (toolId === 'batch-clone' && !referenceFile) throw new Error('请先上传克隆参考图')
+  const lines: string[] = [`批量接口不可用，已自动改用逐张图片编辑。原因：${extractErrorMessage(cause, '批量接口提交失败')}`]
   const outputItems: NonNullable<CreatorOutput['items']> = []
   for (const [index, file] of productFiles.entries()) {
-    if (version !== operationVersion) return
+    if (!isTaskCurrent(task)) return
     try {
-      const composite = await createCloneComposite(referenceFile, file, index)
-      if (version !== operationVersion) return
+      const sourceImage = toolId === 'batch-clone' && referenceFile
+        ? await createCloneComposite(referenceFile, file, index)
+        : file
+      if (!isTaskCurrent(task)) return
       const response = await imageGenerationAPI.editImage({
         apiKey,
-        model: imageModels.value[0] || selectedModel.value,
-        prompt: `合成图左侧是参考图、右侧是商品图。请按左侧构图与风格克隆右侧商品主图，只输出右侧商品。统一要求：${taskPrompt || '保持电商主图质感'}`,
+        model: imageModels.value[0] || taskModel,
+        prompt: toolId === 'batch-clone'
+          ? `合成图左侧是参考图、右侧是商品图。请按左侧构图与风格克隆右侧商品主图，只输出右侧商品。统一要求：${taskPrompt || '保持电商主图质感'}`
+          : `将上传商品图优化为统一的电商主图，保留商品本身外观与细节。统一要求：${taskPrompt || '白底、商业摄影、突出商品质感'}`,
         size: taskImageSize,
         quality: 'high',
         count: 1,
         outputFormat: 'png',
-        image: composite,
+        image: sourceImage,
+        creatorTool: task.toolId,
+        signal,
       })
-      if (version !== operationVersion) return
+      if (!isTaskCurrent(task)) return
       const result = imageOutputFromResponse(response)
       lines.push(`第 ${index + 1} 张：成功`)
-      outputItems.push({ id: `fallback-${index + 1}`, label: file.name, status: 'completed', url: result.url, filename: `clone-${index + 1}.png` })
+      outputItems.push({ id: `fallback-${index + 1}`, label: file.name, status: 'completed', url: result.url, filename: `${toolId === 'batch-clone' ? 'clone' : 'main'}-${index + 1}.png` })
     } catch (itemError) {
-      if (version !== operationVersion) return
+      if (!isTaskCurrent(task)) return
+      if (signal.aborted) throw itemError
       const message = extractErrorMessage(itemError, '图片编辑失败')
       lines.push(`第 ${index + 1} 张：失败，${message}`)
       outputItems.push({ id: `fallback-${index + 1}`, label: file.name, status: 'failed', error: message })
     }
   }
-  if (version !== operationVersion) return
-  output.value = { type: 'batch', content: lines.join('\n'), items: outputItems }
-  statusMessage.value = '已完成逐张兜底处理'
+  if (!isTaskCurrent(task)) return
+  task.state.output = { type: 'batch', content: lines.join('\n'), items: outputItems }
+  task.state.status = '已完成逐张兜底处理'
 }
 
-function scheduleBatchPoll(apiKey: string, batchId: string, version: number, attempt = 0, retryCount = 0) {
-  if (batchPollTimer !== null) window.clearTimeout(batchPollTimer)
-  batchPollTimer = window.setTimeout(() => {
-    batchPollTimer = null
-    void pollBatchStatus(apiKey, batchId, version, attempt, retryCount)
+function scheduleBatchPoll(apiKey: string, batchId: string, task: CreatorTaskContext, attempt = 0, retryCount = 0) {
+  const currentTimer = batchPollTimers.get(task.toolId)
+  if (currentTimer !== undefined) window.clearTimeout(currentTimer)
+  const timer = window.setTimeout(() => {
+    batchPollTimers.delete(task.toolId)
+    void pollBatchStatus(apiKey, batchId, task, attempt, retryCount)
   }, POLL_INTERVAL_MS)
+  batchPollTimers.set(task.toolId, timer)
 }
 
-async function pollBatchStatus(apiKey: string, batchId: string, version: number, attempt: number, retryCount: number) {
-  if (version !== operationVersion) return
+async function pollBatchStatus(apiKey: string, batchId: string, task: CreatorTaskContext, attempt: number, retryCount: number) {
+  if (!isTaskCurrent(task)) return
   if (attempt >= MAX_POLL_ATTEMPTS) {
-    errorMessage.value = '批量任务查询超时，请稍后从创作记录恢复'
-    statusMessage.value = ''
+    task.state.error = '批量任务查询超时，请稍后从创作记录恢复'
+    task.state.status = ''
+    task.state.running = false
     return
   }
   try {
     const job = await batchImageAPI.getBatchImageJob(apiKey, batchId)
-    if (version !== operationVersion) return
-    output.value = {
+    if (!isTaskCurrent(task)) return
+    task.state.output = {
       type: 'batch',
       batchId,
       batchReady: false,
       content: `批量任务：${batchId}\n状态：${job.status}\n成功：${job.success_count || 0}，失败：${job.fail_count || 0}`,
-      items: output.value?.type === 'batch' ? output.value.items : undefined,
+      items: task.state.output?.type === 'batch' ? task.state.output.items : undefined,
     }
     if (['completed', 'failed', 'cancelled', 'output_deleted'].includes(job.status)) {
-      statusMessage.value = job.status === 'completed' ? '批量任务已完成' : `批量任务已结束：${job.status}`
-      if (job.status === 'completed') await loadBatchItems(apiKey, batchId, version)
+      task.state.status = job.status === 'completed' ? '批量任务已完成' : `批量任务已结束：${job.status}`
+      if (job.status === 'completed') await loadBatchItems(apiKey, batchId, task)
+      task.state.running = false
+      await loadRecords()
       return
     }
-    statusMessage.value = `批量任务处理中：${job.status}`
+    task.state.status = `批量任务处理中：${job.status}`
     if (attempt + 1 >= MAX_POLL_ATTEMPTS) {
-      errorMessage.value = '批量任务查询超时，请稍后从创作记录恢复'
-      statusMessage.value = ''
+      task.state.error = '批量任务查询超时，请稍后从创作记录恢复'
+      task.state.status = ''
+      task.state.running = false
       return
     }
-    scheduleBatchPoll(apiKey, batchId, version, attempt + 1)
+    scheduleBatchPoll(apiKey, batchId, task, attempt + 1)
   } catch (error) {
-    if (version !== operationVersion) return
+    if (!isTaskCurrent(task)) return
     if (retryCount < MAX_POLL_RETRIES && attempt + 1 < MAX_POLL_ATTEMPTS) {
-      statusMessage.value = `批量任务状态查询重试中（${retryCount + 1}/${MAX_POLL_RETRIES}）`
-      scheduleBatchPoll(apiKey, batchId, version, attempt + 1, retryCount + 1)
+      task.state.status = `批量任务状态查询重试中（${retryCount + 1}/${MAX_POLL_RETRIES}）`
+      scheduleBatchPoll(apiKey, batchId, task, attempt + 1, retryCount + 1)
       return
     }
-    errorMessage.value = extractErrorMessage(error, '批量任务状态查询失败')
-    statusMessage.value = ''
+    task.state.error = extractErrorMessage(error, '批量任务状态查询失败')
+    task.state.status = ''
+    task.state.running = false
   }
 }
 
-async function loadBatchItems(apiKey: string, batchId: string, version: number) {
+async function loadBatchItems(apiKey: string, batchId: string, task: CreatorTaskContext) {
   const response = await batchImageAPI.listBatchImageItems(apiKey, batchId)
   const items = await Promise.all(response.data.map(async (item, index) => {
     const result: NonNullable<CreatorOutput['items']>[number] = {
@@ -896,20 +1066,24 @@ async function loadBatchItems(apiKey: string, batchId: string, version: number) 
     if (item.error?.message) result.error = item.error.message
     if (item.status === 'completed' && item.image_count > 0) {
       const blob = await batchImageAPI.getBatchImageItemContent(apiKey, batchId, item.custom_id, 0)
-      if (version !== operationVersion) return result
+      if (!isTaskCurrent(task)) return result
       result.url = createTrackedObjectURL(blob)
       result.filename = `${item.custom_id}.${item.file_extension || 'png'}`
     }
     return result
   }))
-  if (version !== operationVersion) return
-  output.value = { type: 'batch', batchId, batchReady: true, content: `批量任务 ${batchId} 已完成`, items }
+  if (!isTaskCurrent(task)) return
+  task.state.output = { type: 'batch', batchId, batchReady: true, content: `批量任务 ${batchId} 已完成`, items }
 }
 
-async function submitWatermark(apiKey: string, version: number) {
-  if (!selectedImageFile.value) throw new Error('请先上传图片')
-  if (watermarkMode.value === 'remove') {
-    output.value = imageOutputFromResponse(await imageGenerationAPI.editImage({
+async function submitWatermark(apiKey: string, task: CreatorTaskContext, signal: AbortSignal) {
+  const sourceFile = selectedImageFile.value
+  const mode = watermarkMode.value
+  const submittedText = watermarkText.value
+  const submittedLogo = logoFile.value
+  if (!sourceFile) throw new Error('请先上传图片')
+  if (mode === 'remove') {
+    const response = await imageGenerationAPI.editImage({
       apiKey,
       model: selectedModel.value,
       prompt: `去除图片中的水印、遮挡或不需要文字，尽量自然补全背景。位置说明：${prompt.value}`,
@@ -917,231 +1091,260 @@ async function submitWatermark(apiKey: string, version: number) {
       quality: 'high',
       count: 1,
       outputFormat: 'png',
-      image: selectedImageFile.value,
-    }))
-    statusMessage.value = '水印去除完成'
+      image: sourceFile,
+      creatorTool: task.toolId,
+      signal,
+    })
+    if (!isTaskCurrent(task)) return
+    task.state.output = imageOutputFromResponse(response)
+    task.state.status = '水印去除完成'
     return
   }
-  const blob = watermarkMode.value === 'text'
-    ? await renderTextWatermark(selectedImageFile.value, watermarkText.value)
-    : await renderLogoWatermark(selectedImageFile.value, logoFile.value)
-  if (version !== operationVersion) return
+  const blob = mode === 'text'
+    ? await renderTextWatermark(sourceFile, submittedText)
+    : await renderLogoWatermark(sourceFile, submittedLogo)
+  if (!isTaskCurrent(task)) return
   const url = createTrackedObjectURL(blob)
-  output.value = { type: 'image', url, content: '水印图片已生成' }
-  statusMessage.value = '水印已添加，可直接下载'
+  task.state.output = { type: 'image', url, content: '水印图片已生成' }
+  task.state.status = '水印已添加，可直接下载'
 }
 
-async function submitVideo(apiKey: string, version: number) {
+async function submitVideo(apiKey: string, task: CreatorTaskContext) {
   const model = selectedModel.value
+  const submittedPrompt = prompt.value
+  const submittedDuration = videoDuration.value
   const provider: GatewayVideoProvider = model === AGNES_VIDEO_MODEL || model.toLowerCase().includes('agnes') ? 'agnes' : 'grok'
   const data = await videoGenerationAPI.generateVideo({
     apiKey,
     provider,
-    prompt: prompt.value,
+    prompt: submittedPrompt,
     model,
-    duration: videoDuration.value,
+    duration: submittedDuration,
     aspectRatio: '16:9',
     size: '1280x720',
     width: 1280,
     height: 720,
+    creatorTool: task.toolId,
   })
-  if (version !== operationVersion) return
+  if (!isTaskCurrent(task)) return
   const videoUrl = data.video?.url || data.url
   const requestId = data.request_id || data.id
   if (requestId) videoTasks.set(requestId, { apiKey, provider, model })
-  output.value = { type: 'video', url: videoUrl, videoRequestId: requestId, content: `视频任务已提交：${requestId || '未返回任务 ID'}` }
+  task.state.output = { type: 'video', url: videoUrl, videoRequestId: requestId, content: `视频任务已提交：${requestId || '未返回任务 ID'}` }
   if (videoUrl || ['completed', 'succeeded', 'success', 'done'].includes(String(data.status || '').toLowerCase())) {
-    statusMessage.value = '视频已生成'
+    task.state.status = '视频已生成'
     return
   }
   if (!requestId) throw new Error('视频接口未返回任务 ID')
-  statusMessage.value = '视频任务处理中'
-  scheduleVideoPoll(apiKey, requestId, provider, model, version)
+  task.state.status = '视频任务处理中'
+  task.state.running = true
+  scheduleVideoPoll(apiKey, requestId, provider, model, task)
 }
 
-function scheduleVideoPoll(apiKey: string, requestId: string, provider: GatewayVideoProvider, model: string, version: number, attempt = 0, retryCount = 0) {
-  if (videoPollTimer !== null) window.clearTimeout(videoPollTimer)
-  videoPollTimer = window.setTimeout(() => {
-    videoPollTimer = null
-    void pollVideoStatus(apiKey, requestId, provider, model, version, attempt, retryCount)
+function scheduleVideoPoll(apiKey: string, requestId: string, provider: GatewayVideoProvider, model: string, task: CreatorTaskContext, attempt = 0, retryCount = 0) {
+  const currentTimer = videoPollTimers.get(task.toolId)
+  if (currentTimer !== undefined) window.clearTimeout(currentTimer)
+  const timer = window.setTimeout(() => {
+    videoPollTimers.delete(task.toolId)
+    void pollVideoStatus(apiKey, requestId, provider, model, task, attempt, retryCount)
   }, POLL_INTERVAL_MS)
+  videoPollTimers.set(task.toolId, timer)
 }
 
-async function pollVideoStatus(apiKey: string, requestId: string, provider: GatewayVideoProvider, model: string, version: number, attempt: number, retryCount: number) {
-  if (version !== operationVersion) return
+async function pollVideoStatus(apiKey: string, requestId: string, provider: GatewayVideoProvider, model: string, task: CreatorTaskContext, attempt: number, retryCount: number) {
+  if (!isTaskCurrent(task)) return
   if (attempt >= MAX_POLL_ATTEMPTS) {
-    errorMessage.value = '视频任务查询超时，请稍后从创作记录恢复'
-    statusMessage.value = ''
+    task.state.error = '视频任务查询超时，请稍后从创作记录恢复'
+    task.state.status = ''
+    task.state.running = false
     return
   }
   try {
     const data = await videoGenerationAPI.getVideoStatus(apiKey, requestId, provider, model)
-    if (version !== operationVersion) return
+    if (!isTaskCurrent(task)) return
     const status = String(data.status || 'processing').toLowerCase()
     const videoUrl = data.video?.url || data.url
-    output.value = { type: 'video', url: videoUrl, videoRequestId: requestId, content: `视频任务 ${requestId}：${status}` }
+    task.state.output = { type: 'video', url: videoUrl, videoRequestId: requestId, content: `视频任务 ${requestId}：${status}` }
     if (['completed', 'succeeded', 'success', 'done'].includes(status)) {
-      statusMessage.value = '视频已生成'
+      task.state.status = '视频已生成'
+      task.state.running = false
+      await loadRecords()
       return
     }
     if (['failed', 'cancelled', 'canceled', 'error', 'expired'].includes(status)) {
-      errorMessage.value = extractErrorMessage(data.error, '视频生成失败')
-      statusMessage.value = ''
+      task.state.error = extractErrorMessage(data.error, '视频生成失败')
+      task.state.status = ''
+      task.state.running = false
+      await loadRecords()
       return
     }
-    statusMessage.value = `视频生成中：${status}`
+    task.state.status = `视频生成中：${status}`
     if (attempt + 1 >= MAX_POLL_ATTEMPTS) {
-      errorMessage.value = '视频任务查询超时，请稍后从创作记录恢复'
-      statusMessage.value = ''
+      task.state.error = '视频任务查询超时，请稍后从创作记录恢复'
+      task.state.status = ''
+      task.state.running = false
       return
     }
-    scheduleVideoPoll(apiKey, requestId, provider, model, version, attempt + 1)
+    scheduleVideoPoll(apiKey, requestId, provider, model, task, attempt + 1)
   } catch (error) {
-    if (version !== operationVersion) return
+    if (!isTaskCurrent(task)) return
     if (retryCount < MAX_POLL_RETRIES && attempt + 1 < MAX_POLL_ATTEMPTS) {
-      statusMessage.value = `视频状态查询重试中（${retryCount + 1}/${MAX_POLL_RETRIES}）`
-      scheduleVideoPoll(apiKey, requestId, provider, model, version, attempt + 1, retryCount + 1)
+      task.state.status = `视频状态查询重试中（${retryCount + 1}/${MAX_POLL_RETRIES}）`
+      scheduleVideoPoll(apiKey, requestId, provider, model, task, attempt + 1, retryCount + 1)
       return
     }
-    errorMessage.value = extractErrorMessage(error, '视频状态查询失败')
-    statusMessage.value = ''
+    task.state.error = extractErrorMessage(error, '视频状态查询失败')
+    task.state.status = ''
+    task.state.running = false
   }
 }
 
-async function submitTranscription(apiKey: string) {
-  if (!selectedAudioFile.value) throw new Error('请先上传 WAV 或 MP3 音频')
-  const result = await onlineCreatorAPI.transcribeCreatorAudio({
-    apiKey,
-    model: selectedModel.value,
-    file: selectedAudioFile.value,
-    language: targetLanguage.value,
-  })
-  output.value = { type: 'text', content: result.content }
-  addLocalRecord({ title: selectedAudioFile.value.name, kind: '语音转写', preview: result.content.slice(0, 60), content: result.content, outputType: 'text' })
-  statusMessage.value = '转写完成'
-}
-
-async function submitSpeech(apiKey: string, version: number) {
-  const result = await onlineCreatorAPI.synthesizeCreatorSpeech({
-    apiKey,
-    model: selectedModel.value,
-    text: prompt.value,
-    language: targetLanguage.value,
-    style: speechStyle.value,
-    voice: speechVoice.value,
-    format: 'mp3',
-  })
-  if (version !== operationVersion) return
-  audioOutputBlob = result.blob
-  audioOutputUrl.value = createTrackedObjectURL(result.blob)
-  output.value = { type: 'audio', url: audioOutputUrl.value, content: result.transcript || prompt.value }
-  addLocalRecord({ title: 'AI 配音', kind: '音频', preview: prompt.value.slice(0, 60), content: result.transcript || prompt.value, outputType: 'audio', blob: result.blob })
-  statusMessage.value = '配音已生成'
-}
-
 async function handleSubmit() {
-  if (!canSubmit.value || !selectedApiKey.value) return
-  clearPollingTimers()
-  releaseObjectUrls()
-  const version = ++operationVersion
+  if (!canSubmit.value || !selectedApiKey.value || !isWorkTool(activeTool.value)) return
   const toolId = activeTool.value
+  const state = taskStates[toolId]
+  const version = ++state.version
+  const task: CreatorTaskContext = { toolId, state, version }
   const apiKey = selectedApiKey.value.key
-  submitting.value = true
-  errorMessage.value = ''
-  statusMessage.value = '正在请求网关'
-  output.value = null
+  const controller = new AbortController()
+  state.controller = controller
+  let timedOut = false
+  const timeoutMs = toolId === 'batch-main' || toolId === 'batch-clone' ? BATCH_REQUEST_TIMEOUT_MS : GATEWAY_REQUEST_TIMEOUT_MS
+  const timeoutId = window.setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+  state.loading = true
+  state.running = false
+  state.error = ''
+  state.status = '正在请求网关'
+  state.output = null
   try {
-    if (toolId === 'assistant') await submitAssistant(apiKey)
-    else if (toolId === 'product-copy') await submitProductCopy(apiKey)
-    else if (toolId === 'image') await submitImage(apiKey)
-    else if (toolId === 'edit' || toolId === 'image-translate') await submitEdit(apiKey)
-    else if (toolId === 'batch-main' || toolId === 'batch-clone') await submitBatch(apiKey, toolId, version)
-    else if (toolId === 'watermark') await submitWatermark(apiKey, version)
-    else if (toolId === 'video') await submitVideo(apiKey, version)
-    else if (toolId === 'transcription') await submitTranscription(apiKey)
-    else if (toolId === 'speech') await submitSpeech(apiKey, version)
-    await loadRecords()
+    if (toolId === 'product-copy') await submitProductCopy(apiKey, controller.signal, task)
+    else if (toolId === 'image') await submitImage(apiKey, controller.signal, task)
+    else if (toolId === 'edit' || toolId === 'outpaint') await submitEdit(apiKey, controller.signal, task)
+    else if (toolId === 'batch-main' || toolId === 'batch-clone') await submitBatch(apiKey, task, controller.signal)
+    else if (toolId === 'watermark') await submitWatermark(apiKey, task, controller.signal)
+    else if (toolId === 'video') await submitVideo(apiKey, task)
+    if (isTaskCurrent(task)) await loadRecords()
   } catch (error) {
-    errorMessage.value = extractErrorMessage(error, '创作失败，请检查密钥、模型或参数')
-    statusMessage.value = ''
+    if (!isTaskCurrent(task)) return
+    state.error = timedOut
+      ? `网关请求超过 ${Math.round(timeoutMs / 1000)} 秒，已自动取消；可切换工具或稍后重试`
+      : extractErrorMessage(error, '创作失败，请检查密钥、模型或参数')
+    state.status = ''
+    state.running = false
   } finally {
-    submitting.value = false
+    window.clearTimeout(timeoutId)
+    if (state.controller === controller) state.controller = null
+    if (isTaskCurrent(task)) state.loading = false
   }
 }
 
 async function restoreRecord(record: GenerationRecord) {
-  clearPollingTimers()
-  releaseObjectUrls()
-  const version = ++operationVersion
+  const batchContext = batchRecordContexts.get(record.task_id)
+  if (batchContext) {
+    await restoreBatchRecord(batchContext)
+    return
+  }
+  const version = ++restoreRequestVersion
+  const creatorTool = record.creator_tool as CreatorWorkToolId | undefined
+  const targetTool: CreatorWorkToolId = creatorTool && workToolIds.includes(creatorTool)
+    ? creatorTool
+    : record.media_type === 'video' ? 'video' : 'image'
+  const state = taskStates[targetTool]
   try {
-    let url = record.result?.urls?.[0]
-    if (!url && record.result?.files?.length) {
+    let url: string | undefined
+    if (record.result?.files?.length) {
       const blob = await generationRecordsAPI.content(record.task_id, 0)
-      if (version !== operationVersion) return
+      if (version !== restoreRequestVersion) return
       url = createTrackedObjectURL(blob)
-    }
-    if (version !== operationVersion) return
-    if (url && record.media_type === 'image') output.value = { type: 'image', url, content: record.prompt_preview || '已从创作记录恢复图片' }
-    else if (url && record.media_type === 'video') output.value = { type: 'video', url, content: record.prompt_preview || '已从创作记录恢复视频' }
-    else output.value = { type: 'text', content: record.prompt_preview || '该记录没有可直接展示的结果' }
-    statusMessage.value = '已从创作记录恢复'
-    errorMessage.value = ''
+    } else url = record.result?.urls?.[0]
+    if (version !== restoreRequestVersion) return
+    if (url && record.media_type === 'image') state.output = { type: 'image', url, content: record.prompt_preview || '已从创作记录恢复图片' }
+    else if (url && record.media_type === 'video') state.output = { type: 'video', url, content: record.prompt_preview || '已从创作记录恢复视频' }
+    else state.output = { type: 'text', content: record.prompt_preview || '该记录没有可直接展示的结果' }
+    activeTool.value = targetTool
+    syncSelectedModel()
+    state.status = '已从创作记录恢复'
+    state.error = ''
   } catch (error) {
-    if (version !== operationVersion) return
-    errorMessage.value = extractErrorMessage(error, '创作记录内容读取失败')
+    if (version !== restoreRequestVersion) return
+    state.error = extractErrorMessage(error, '创作记录内容读取失败')
+  }
+}
+
+async function restoreBatchRecord(context: CreatorBatchRecordContext) {
+  const { apiKey, job, toolId } = context
+  const state = taskStates[toolId]
+  const version = ++state.version
+  const task: CreatorTaskContext = { toolId, state, version }
+  const terminal = ['completed', 'failed', 'cancelled', 'output_deleted'].includes(job.status)
+  batchAPIKeys.set(job.id, apiKey)
+  activeTool.value = toolId
+  syncSelectedModel()
+  state.error = ''
+  state.loading = job.status === 'completed'
+  state.running = !terminal
+  state.status = job.status === 'completed' ? '正在加载批量结果' : `批量任务状态：${job.status}`
+  state.output = {
+    type: 'batch',
+    batchId: job.id,
+    batchReady: job.status === 'completed',
+    content: `批量任务：${job.id}\n状态：${job.status}\n数量：${job.item_count}`,
+  }
+  try {
+    if (job.status === 'completed') await loadBatchItems(apiKey, job.id, task)
+    else if (!terminal) scheduleBatchPoll(apiKey, job.id, task)
+  } catch (error) {
+    if (!isTaskCurrent(task)) return
+    state.error = extractErrorMessage(error, '批量记录内容读取失败')
+    state.status = ''
+    state.running = false
+  } finally {
+    if (isTaskCurrent(task)) state.loading = false
   }
 }
 
 function restoreLocalRecord(record: CreatorLocalRecord) {
-  releaseObjectUrls()
-  if (record.outputType === 'audio' && record.blob) {
-    audioOutputBlob = record.blob
-    audioOutputUrl.value = createTrackedObjectURL(record.blob)
-    output.value = { type: 'audio', url: audioOutputUrl.value, content: record.content }
-  } else {
-    output.value = { type: 'text', content: record.content }
-  }
-  statusMessage.value = '已从本地记录恢复'
-  errorMessage.value = ''
+  const state = taskStates['product-copy']
+  state.output = { type: 'text', content: record.content }
+  activeTool.value = 'product-copy'
+  syncSelectedModel()
+  state.status = '已从本地记录恢复'
+  state.error = ''
 }
 
 async function copyText(content: string) {
+  const state = activeTaskState.value
   await navigator.clipboard?.writeText(content)
-  statusMessage.value = '已复制'
-}
-
-function downloadAudio() {
-  if (!audioOutputBlob || !audioOutputUrl.value) return
-  const link = document.createElement('a')
-  link.href = audioOutputUrl.value
-  link.download = `creator-speech-${Date.now()}.mp3`
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
+  if (state) state.status = '已复制'
 }
 
 async function downloadBatch(batchId: string) {
+  const state = activeTaskState.value
   const apiKey = batchAPIKeys.get(batchId) || selectedApiKey.value?.key
   if (!apiKey) return
   try {
     const blob = await batchImageAPI.downloadBatchImageZip(apiKey, batchId)
     batchImageAPI.saveBlob(blob, `${batchId}.zip`)
   } catch (error) {
-    errorMessage.value = extractErrorMessage(error, '批量图片下载失败')
+    if (state) state.error = extractErrorMessage(error, '批量图片下载失败')
   }
 }
 
 async function downloadVideo(requestId: string) {
+  const state = activeTaskState.value
   const task = videoTasks.get(requestId)
   if (!task) {
-    errorMessage.value = '缺少视频任务上下文，请重新查询或生成视频后再下载'
+    if (state) state.error = '缺少视频任务上下文，请重新查询或生成视频后再下载'
     return
   }
   try {
     const blob = await videoGenerationAPI.downloadVideoContent(task.apiKey, requestId, task.provider, task.model)
     batchImageAPI.saveBlob(blob, `${requestId}.mp4`)
   } catch (error) {
-    errorMessage.value = extractErrorMessage(error, '视频下载失败')
+    if (state) state.error = extractErrorMessage(error, '视频下载失败')
   }
 }
 
@@ -1154,15 +1357,56 @@ function createTrackedObjectURL(blob: Blob): string {
 function releaseObjectUrls() {
   for (const url of objectUrls) URL.revokeObjectURL(url)
   objectUrls.clear()
-  audioOutputUrl.value = ''
-  audioOutputBlob = null
 }
 
 function clearPollingTimers() {
-  if (videoPollTimer !== null) window.clearTimeout(videoPollTimer)
-  if (batchPollTimer !== null) window.clearTimeout(batchPollTimer)
-  videoPollTimer = null
-  batchPollTimer = null
+  for (const timer of videoPollTimers.values()) window.clearTimeout(timer)
+  for (const timer of batchPollTimers.values()) window.clearTimeout(timer)
+  videoPollTimers.clear()
+  batchPollTimers.clear()
+}
+
+async function createOutpaintImage(
+  file: File,
+  direction: (typeof outpaintDirectionOptions)[number]['id'],
+  ratio: number,
+): Promise<{ file: File; size: string }> {
+  const image = await loadImageElement(file)
+  const sourceWidth = image.naturalWidth || image.width
+  const sourceHeight = image.naturalHeight || image.height
+  const safeRatio = Math.min(1, Math.max(0.25, Number(ratio) || 0.5))
+  let left = 0
+  let right = 0
+  let top = 0
+  let bottom = 0
+  if (direction === 'all') {
+    left = right = Math.round(sourceWidth * safeRatio / 2)
+    top = bottom = Math.round(sourceHeight * safeRatio / 2)
+  } else if (direction === 'left') left = Math.round(sourceWidth * safeRatio)
+  else if (direction === 'right') right = Math.round(sourceWidth * safeRatio)
+  else if (direction === 'top') top = Math.round(sourceHeight * safeRatio)
+  else bottom = Math.round(sourceHeight * safeRatio)
+
+  const rawWidth = sourceWidth + left + right
+  const rawHeight = sourceHeight + top + bottom
+  const scale = Math.min(1, 2048 / Math.max(rawWidth, rawHeight))
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(rawWidth * scale))
+  canvas.height = Math.max(1, Math.round(rawHeight * scale))
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('当前浏览器不支持扩图画布')
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  ctx.drawImage(
+    image,
+    Math.round(left * scale),
+    Math.round(top * scale),
+    Math.round(sourceWidth * scale),
+    Math.round(sourceHeight * scale),
+  )
+  const blob = await canvasToBlob(canvas)
+  const aspectRatio = canvas.width / canvas.height
+  const size = aspectRatio > 1.15 ? '1536x1024' : aspectRatio < 0.87 ? '1024x1536' : '1024x1024'
+  return { file: new File([blob], 'outpaint-source.png', { type: 'image/png' }), size }
 }
 
 async function createCloneComposite(referenceFile: File, productFile: File, index: number): Promise<File> {
@@ -1289,8 +1533,9 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  operationVersion += 1
+  restoreRequestVersion += 1
   modelRequestVersion += 1
+  cancelAllRequests()
   clearPollingTimers()
   releaseObjectUrls()
 })
@@ -1304,7 +1549,7 @@ onBeforeUnmount(() => {
   min-height: 620px;
   margin: 0 auto;
   display: grid;
-  grid-template-columns: 200px minmax(480px, 540px) minmax(360px, 1fr);
+  grid-template-columns: 184px minmax(420px, 470px) minmax(520px, 1fr);
   align-items: stretch;
   gap: 12px;
   overflow: hidden;
@@ -1322,11 +1567,11 @@ onBeforeUnmount(() => {
   scrollbar-gutter: stable;
 }
 
-.online-creator-page.overview-mode .creator-workspace {
+.online-creator-page.wide-mode .creator-workspace {
   grid-column: 2 / -1;
 }
 
-.online-creator-page.overview-mode > :deep(.creator-result-panel) {
+.online-creator-page.wide-mode > :deep(.creator-result-panel) {
   display: none;
 }
 
@@ -1488,27 +1733,8 @@ onBeforeUnmount(() => {
   line-height: 1.65;
 }
 
-.upload-box {
-  display: grid;
-  min-height: 78px;
-  place-items: center;
-  border: 1px dashed #cbd5e1;
-  border-radius: 6px;
-  background: #f8fafc;
-  color: #64748b;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 720;
-  padding: 12px;
-  text-align: center;
-}
-
-.upload-box + .upload-box {
+.panel-block > :deep(.image-upload + .image-upload) {
   margin-top: 10px;
-}
-
-.upload-box input {
-  display: none;
 }
 
 .unsupported-note {
@@ -1533,37 +1759,6 @@ onBeforeUnmount(() => {
   color: inherit;
   cursor: pointer;
   font-weight: 760;
-}
-
-.assistant-log {
-  display: grid;
-  max-height: 260px;
-  overflow: auto;
-  gap: 8px;
-  border: 1px solid #edf1f5;
-  border-radius: 6px;
-  background: #f8fafc;
-  padding: 12px;
-}
-
-.message-row {
-  width: fit-content;
-  max-width: min(680px, 92%);
-  border-radius: 6px;
-  padding: 10px 12px;
-  color: #1e293b;
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.message-row.user {
-  justify-self: end;
-  background: #ccfbf1;
-}
-
-.message-row.assistant {
-  justify-self: start;
-  background: #fff;
 }
 
 .prompt-card {
@@ -1634,7 +1829,7 @@ onBeforeUnmount(() => {
     min-height: auto;
   }
 
-  .online-creator-page.overview-mode .creator-workspace,
+  .online-creator-page.wide-mode .creator-workspace,
   .online-creator-page > :deep(.creator-result-panel) {
     grid-column: 1;
   }

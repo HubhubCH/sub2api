@@ -17,6 +17,7 @@ import (
 
 type generationRecordRepoStub struct {
 	record                *GenerationRecord
+	createErr             error
 	cleanupIDs            []string
 	cleanupUser           int64
 	cleanupLimit          int
@@ -30,6 +31,9 @@ type generationRecordRepoStub struct {
 }
 
 func (r *generationRecordRepoStub) Create(_ context.Context, p CreateGenerationRecordParams, _ time.Time, _ int) (*GenerationRecord, []string, error) {
+	if r.createErr != nil {
+		return nil, nil, r.createErr
+	}
 	r.record = &GenerationRecord{TaskID: p.TaskID, UserID: p.UserID, APIKeyID: p.APIKeyID, MediaType: p.MediaType}
 	return r.record, nil, nil
 }
@@ -190,6 +194,18 @@ func (r *generationAccountRepoStub) GetByID(context.Context, int64) (*Account, e
 	return r.account, nil
 }
 
+func TestGenerationRecordServicePropagatesActiveTaskLimit(t *testing.T) {
+	repo := &generationRecordRepoStub{createErr: ErrGenerationRecordLimit}
+	svc := NewGenerationRecordService(repo)
+
+	record, err := svc.Create(context.Background(), CreateGenerationRecordParams{
+		TaskID: "gen_limit", UserID: 1, APIKeyID: 2, MediaType: "image",
+	})
+
+	require.ErrorIs(t, err, ErrGenerationRecordLimit)
+	require.Nil(t, record)
+}
+
 func TestGenerationRecordServicePersistsCompletedSSEImage(t *testing.T) {
 	repo := &generationRecordRepoStub{}
 	svc := NewGenerationRecordService(repo)
@@ -281,7 +297,7 @@ func TestValidateGenerationMediaResolvedHostRejectsPrivateIP(t *testing.T) {
 	require.ErrorContains(t, validateGenerationMediaResolvedHost(context.Background(), "127.0.0.1"), "私有网络")
 }
 
-func TestGenerationRecordServiceKeepsFiveItemsForThreeDays(t *testing.T) {
+func TestGenerationRecordServiceKeepsTenItemsForThreeDays(t *testing.T) {
 	repo := &generationRecordRepoStub{record: &GenerationRecord{TaskID: "latest"}, cleanupIDs: []string{"expired"}}
 	svc := NewGenerationRecordService(repo)
 	svc.dataDir = t.TempDir()
@@ -292,6 +308,8 @@ func TestGenerationRecordServiceKeepsFiveItemsForThreeDays(t *testing.T) {
 
 	_, err := svc.List(context.Background(), 7, 50)
 	require.NoError(t, err)
+	require.Equal(t, 10, GenerationRecordMaxItems)
+	require.Equal(t, 72*time.Hour, GenerationRecordRetention)
 	require.Equal(t, int64(7), repo.cleanupUser)
 	require.Equal(t, GenerationRecordMaxItems, repo.cleanupLimit)
 	require.Equal(t, GenerationRecordMaxItems, repo.listLimit)

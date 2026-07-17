@@ -198,7 +198,7 @@ export default {
 
   onlineCreator: {
     title: '在线创作',
-    description: '在统一工作台中完成图片、视频、文案和音频创作。',
+    description: '在统一工作台中完成图片、视频和文案创作。',
   },
 
   tokenLeaderboard: {

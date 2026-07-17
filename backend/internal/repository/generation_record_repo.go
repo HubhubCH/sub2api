@@ -62,7 +62,7 @@ func (r *generationRecordRepository) Create(ctx context.Context, p service.Creat
 DELETE FROM generation_records
 WHERE id = (
     SELECT id FROM generation_records
-    WHERE user_id=$1
+    WHERE user_id=$1 AND status IN ('completed','failed')
     ORDER BY created_at ASC,id ASC
     LIMIT 1
 )
@@ -78,11 +78,11 @@ RETURNING task_id`, p.UserID).Scan(&removedTaskID)
 	}
 	record := &service.GenerationRecord{}
 	err = tx.QueryRowContext(ctx, `
-INSERT INTO generation_records (task_id,user_id,api_key_id,media_type,provider,model,prompt_preview,status)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-RETURNING task_id,user_id,api_key_id,media_type,provider,model,prompt_preview,status,created_at,updated_at`,
-		p.TaskID, p.UserID, p.APIKeyID, p.MediaType, p.Provider, p.Model, p.PromptPreview, service.GenerationStatusRunning,
-	).Scan(&record.TaskID, &record.UserID, &record.APIKeyID, &record.MediaType, &record.Provider, &record.Model, &record.PromptPreview, &record.Status, &record.CreatedAt, &record.UpdatedAt)
+INSERT INTO generation_records (task_id,user_id,api_key_id,media_type,creator_tool,provider,model,prompt_preview,status)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+RETURNING task_id,user_id,api_key_id,media_type,creator_tool,provider,model,prompt_preview,status,created_at,updated_at`,
+		p.TaskID, p.UserID, p.APIKeyID, p.MediaType, p.CreatorTool, p.Provider, p.Model, p.PromptPreview, service.GenerationStatusRunning,
+	).Scan(&record.TaskID, &record.UserID, &record.APIKeyID, &record.MediaType, &record.CreatorTool, &record.Provider, &record.Model, &record.PromptPreview, &record.Status, &record.CreatedAt, &record.UpdatedAt)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -129,7 +129,7 @@ WHERE user_id=$1 AND api_key_id=$2 AND account_id=$3 AND provider=$4 AND upstrea
 }
 
 func (r *generationRecordRepository) ListByUser(ctx context.Context, userID int64, limit int) ([]*service.GenerationRecord, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT task_id,user_id,api_key_id,COALESCE(account_id,0),media_type,provider,model,prompt_preview,status,COALESCE(upstream_task_id,''),COALESCE(result_json,'null'::jsonb),COALESCE(error_message,''),created_at,updated_at,finished_at FROM generation_records WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2`, userID, limit)
+	rows, err := r.db.QueryContext(ctx, `SELECT task_id,user_id,api_key_id,COALESCE(account_id,0),media_type,creator_tool,provider,model,prompt_preview,status,COALESCE(upstream_task_id,''),COALESCE(result_json,'null'::jsonb),COALESCE(error_message,''),created_at,updated_at,finished_at FROM generation_records WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2`, userID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +139,7 @@ func (r *generationRecordRepository) ListByUser(ctx context.Context, userID int6
 		record := &service.GenerationRecord{}
 		var raw []byte
 		var finished sql.NullTime
-		if err := rows.Scan(&record.TaskID, &record.UserID, &record.APIKeyID, &record.AccountID, &record.MediaType, &record.Provider, &record.Model, &record.PromptPreview, &record.Status, &record.UpstreamTaskID, &raw, &record.ErrorMessage, &record.CreatedAt, &record.UpdatedAt, &finished); err != nil {
+		if err := rows.Scan(&record.TaskID, &record.UserID, &record.APIKeyID, &record.AccountID, &record.MediaType, &record.CreatorTool, &record.Provider, &record.Model, &record.PromptPreview, &record.Status, &record.UpstreamTaskID, &raw, &record.ErrorMessage, &record.CreatedAt, &record.UpdatedAt, &finished); err != nil {
 			return nil, err
 		}
 		record.Result = raw
@@ -155,7 +155,7 @@ func (r *generationRecordRepository) ListByUser(ctx context.Context, userID int6
 func (r *generationRecordRepository) GetByUser(ctx context.Context, userID int64, taskID string) (*service.GenerationRecord, error) {
 	record := &service.GenerationRecord{}
 	var raw []byte
-	err := r.db.QueryRowContext(ctx, `SELECT task_id,user_id,api_key_id,COALESCE(account_id,0),media_type,provider,model,prompt_preview,status,COALESCE(upstream_task_id,''),COALESCE(result_json,'null'::jsonb),COALESCE(error_message,''),created_at,updated_at FROM generation_records WHERE user_id=$1 AND task_id=$2`, userID, taskID).Scan(&record.TaskID, &record.UserID, &record.APIKeyID, &record.AccountID, &record.MediaType, &record.Provider, &record.Model, &record.PromptPreview, &record.Status, &record.UpstreamTaskID, &raw, &record.ErrorMessage, &record.CreatedAt, &record.UpdatedAt)
+	err := r.db.QueryRowContext(ctx, `SELECT task_id,user_id,api_key_id,COALESCE(account_id,0),media_type,creator_tool,provider,model,prompt_preview,status,COALESCE(upstream_task_id,''),COALESCE(result_json,'null'::jsonb),COALESCE(error_message,''),created_at,updated_at FROM generation_records WHERE user_id=$1 AND task_id=$2`, userID, taskID).Scan(&record.TaskID, &record.UserID, &record.APIKeyID, &record.AccountID, &record.MediaType, &record.CreatorTool, &record.Provider, &record.Model, &record.PromptPreview, &record.Status, &record.UpstreamTaskID, &raw, &record.ErrorMessage, &record.CreatedAt, &record.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, os.ErrNotExist
 	}
@@ -166,7 +166,7 @@ func (r *generationRecordRepository) GetByUser(ctx context.Context, userID int64
 func (r *generationRecordRepository) GetByUpstream(ctx context.Context, userID, apiKeyID, accountID int64, provider, upstream string) (*service.GenerationRecord, error) {
 	record := &service.GenerationRecord{}
 	var raw []byte
-	err := r.db.QueryRowContext(ctx, `SELECT task_id,user_id,api_key_id,COALESCE(account_id,0),media_type,provider,model,prompt_preview,status,COALESCE(upstream_task_id,''),COALESCE(result_json,'null'::jsonb),COALESCE(error_message,''),created_at,updated_at FROM generation_records WHERE user_id=$1 AND api_key_id=$2 AND account_id=$3 AND provider=$4 AND upstream_task_id=$5`, userID, apiKeyID, accountID, provider, upstream).Scan(&record.TaskID, &record.UserID, &record.APIKeyID, &record.AccountID, &record.MediaType, &record.Provider, &record.Model, &record.PromptPreview, &record.Status, &record.UpstreamTaskID, &raw, &record.ErrorMessage, &record.CreatedAt, &record.UpdatedAt)
+	err := r.db.QueryRowContext(ctx, `SELECT task_id,user_id,api_key_id,COALESCE(account_id,0),media_type,creator_tool,provider,model,prompt_preview,status,COALESCE(upstream_task_id,''),COALESCE(result_json,'null'::jsonb),COALESCE(error_message,''),created_at,updated_at FROM generation_records WHERE user_id=$1 AND api_key_id=$2 AND account_id=$3 AND provider=$4 AND upstream_task_id=$5`, userID, apiKeyID, accountID, provider, upstream).Scan(&record.TaskID, &record.UserID, &record.APIKeyID, &record.AccountID, &record.MediaType, &record.CreatorTool, &record.Provider, &record.Model, &record.PromptPreview, &record.Status, &record.UpstreamTaskID, &raw, &record.ErrorMessage, &record.CreatedAt, &record.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, os.ErrNotExist
 	}
@@ -232,7 +232,7 @@ WITH selected AS (
     WHERE records.id=selected.id
     RETURNING records.*
 )
-SELECT task_id,user_id,api_key_id,account_id,media_type,provider,model,prompt_preview,status,
+SELECT task_id,user_id,api_key_id,account_id,media_type,creator_tool,provider,model,prompt_preview,status,
        upstream_task_id,COALESCE(result_json,'null'::jsonb),COALESCE(error_message,''),created_at,updated_at
 FROM claimed
 ORDER BY updated_at ASC`, cutoff, limit)
@@ -245,7 +245,7 @@ ORDER BY updated_at ASC`, cutoff, limit)
 		record := &service.GenerationRecord{}
 		var raw []byte
 		if err := rows.Scan(
-			&record.TaskID, &record.UserID, &record.APIKeyID, &record.AccountID, &record.MediaType,
+			&record.TaskID, &record.UserID, &record.APIKeyID, &record.AccountID, &record.MediaType, &record.CreatorTool,
 			&record.Provider, &record.Model, &record.PromptPreview, &record.Status, &record.UpstreamTaskID,
 			&raw, &record.ErrorMessage, &record.CreatedAt, &record.UpdatedAt,
 		); err != nil {

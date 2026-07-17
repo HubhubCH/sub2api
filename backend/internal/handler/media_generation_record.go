@@ -104,9 +104,10 @@ func (h *OpenAIGatewayHandler) persistMediaGeneration(c *gin.Context, mediaType 
 	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
 	provider := inferMediaGenerationProvider(mediaType, gjson.GetBytes(body, "provider").String(), model)
 	prompt := strings.TrimSpace(gjson.GetBytes(body, "prompt").String())
+	creatorTool := normalizeCreatorTool(c.GetHeader("X-Creator-Tool"), mediaType)
 	persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 5*time.Second)
 	_, err = h.generationRecordService.Create(persistCtx, service.CreateGenerationRecordParams{
-		TaskID: taskID, UserID: subject.UserID, APIKeyID: apiKey.ID, MediaType: mediaType,
+		TaskID: taskID, UserID: subject.UserID, APIKeyID: apiKey.ID, MediaType: mediaType, CreatorTool: creatorTool,
 		Provider: provider, Model: model, PromptPreview: prompt,
 	})
 	cancelPersist()
@@ -159,6 +160,18 @@ func (h *OpenAIGatewayHandler) persistMediaGeneration(c *gin.Context, mediaType 
 	if commitErr := buffer.Commit(); commitErr != nil {
 		_ = c.Error(commitErr)
 	}
+}
+
+func normalizeCreatorTool(value, mediaType string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	allowed := map[string]string{
+		"image": "image", "edit": "image", "outpaint": "image",
+		"batch-main": "image", "batch-clone": "image", "watermark": "image", "video": "video",
+	}
+	if allowed[value] == mediaType {
+		return value
+	}
+	return ""
 }
 
 func inferMediaGenerationProvider(mediaType, provider, model string) string {
@@ -227,7 +240,7 @@ func (h *OpenAIGatewayHandler) ListGenerationRecords(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "未登录"})
 		return
 	}
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "30"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
 	records, err := h.generationRecordService.List(c.Request.Context(), subject.UserID, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载生成记录失败"})

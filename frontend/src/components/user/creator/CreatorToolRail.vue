@@ -22,7 +22,7 @@ import Icon from '@/components/icons/Icon.vue'
 export interface CreatorToolNavItem {
   id: string
   label: string
-  icon: 'home' | 'chat' | 'edit' | 'globe' | 'sparkles' | 'grid' | 'copy' | 'upload' | 'play' | 'cloud' | 'clock'
+  icon: 'home' | 'chat' | 'edit' | 'globe' | 'sparkles' | 'grid' | 'copy' | 'upload' | 'play' | 'cloud' | 'clock' | 'arrowsUpDown'
 }
 
 defineProps<{

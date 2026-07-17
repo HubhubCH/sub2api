@@ -27,6 +27,7 @@ export interface VideoGenerateRequest {
   height?: number
   resolution?: VideoResolution
   mode?: string
+  creatorTool?: string
 }
 
 export type GrokVideoGenerateRequest = Omit<VideoGenerateRequest, 'provider'> & {
@@ -230,7 +231,7 @@ export async function generateVideo(request: VideoGenerateRequest): Promise<Vide
     const { data } = await gatewayClient.post<VideoGenerateResponse>(
       buildGatewayUrl('/v1/videos/generations'),
       payload,
-      { headers: { ...bearerHeaders(request.apiKey), 'X-Save-Generation-Record': '1' } }
+      { headers: { ...bearerHeaders(request.apiKey), 'X-Save-Generation-Record': '1', ...(request.creatorTool ? { 'X-Creator-Tool': request.creatorTool } : {}) } }
     )
     return data
   } catch (error) {

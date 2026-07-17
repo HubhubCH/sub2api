@@ -12,7 +12,7 @@
 - Avoid: marketing-style heroes, decorative cards, layout rewrites, and unrelated color or spacing changes.
 
 ## Product goals
-- Goals: upgrade safely to v0.1.158; consolidate AI image and video into one online-creator workspace; make AI image, image edit, assistant, product copy, image translation, batch product images, batch clone, watermark processing, AI video, transcription, dubbing, and creation history operational through compatible user API keys; retain the five-minute realtime Token ranking and all cumulative-recharge agent promotion behavior.
+- Goals: upgrade safely to v0.1.159; consolidate AI image and video into one online-creator workspace; make AI image, image edit, product copy, image outpainting, batch product images, batch clone, watermark processing, AI video, and creation history operational through compatible user API keys; retain the five-minute realtime Token ranking and all cumulative-recharge agent promotion behavior.
 - Non-goals: replace the existing global sidebar or brand language; invent successful results for unsupported upstream models; reset cumulative recharge after promotion; permit demotion; exceed level 1; change reward settlement; expose credentials; or remove the existing direct media routes before the unified workspace is accepted.
 - Success signals: every 500 eligible accumulated balance-redemption units advances one level from the account's existing level; cumulative progress never resets; registration-bonus redemptions with value 2 are excluded from rebate and cumulative totals; newly self-registered accounts start at level 10, newly administrator-invited accounts start at level 1, and existing accounts retain their pre-migration tree-derived starting level; promotion moves only the promoted node's upstream edge; the administrator view shows every direct branch plus every no-upstream root and reveals their lower levels through the existing disclosure control.
 
@@ -68,7 +68,7 @@
 
 ## Content voice
 - Tone: concise Chinese operational copy.
-- Terminology: use `在线创作`, `创作首页`, `AI 生图`, `图片编辑`, `对话助手`, `商品文案`, `图片翻译`, `批量主图`, `批量克隆`, `水印处理`, `AI 视频`, `语音转写`, `AI 配音`, and `创作记录`.
+- Terminology: use `在线创作`, `创作首页`, `AI 生图`, `图片编辑`, `商品文案`, `图片扩图`, `批量主图`, `批量克隆`, `水印处理`, `AI 视频`, and `创作记录`.
 - Microcopy rules: do not claim 4K/Full HD unless the provider accepts and returns it; affiliate level badges use concise labels such as "一级" and omit the repeated word "代理".
 
 ## Implementation constraints

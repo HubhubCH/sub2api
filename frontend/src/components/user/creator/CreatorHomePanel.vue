@@ -2,7 +2,7 @@
   <div class="creator-home">
     <section class="home-section">
       <div class="section-heading">
-        <h2>工具矩阵</h2>
+        <h2>创作工具</h2>
         <span>{{ tools.length }} 个模块</span>
       </div>
       <div class="tool-grid">
@@ -22,10 +22,13 @@
 
     <section class="home-section">
       <div class="section-heading">
-        <h2>最近创作</h2>
-        <span>{{ recent.length }}</span>
+        <h2>最近记录</h2>
+        <div class="heading-actions">
+          <span>{{ recent.length }}</span>
+          <button type="button" @click="$emit('openHistory')">查看全部</button>
+        </div>
       </div>
-      <div v-if="recent.length === 0" class="empty-row">暂无最近创作</div>
+      <div v-if="recent.length === 0" class="empty-row">暂无生成记录</div>
       <button
         v-for="record in recent"
         :key="record.id"
@@ -48,7 +51,7 @@ export interface CreatorHomeTool {
   id: string
   label: string
   badge: string
-  icon: 'home' | 'chat' | 'edit' | 'globe' | 'sparkles' | 'grid' | 'copy' | 'upload' | 'play' | 'cloud' | 'clock'
+  icon: 'home' | 'chat' | 'edit' | 'globe' | 'sparkles' | 'grid' | 'copy' | 'upload' | 'play' | 'cloud' | 'clock' | 'arrowsUpDown'
 }
 
 export interface CreatorRecentItem {
@@ -72,14 +75,13 @@ defineEmits<{
 <style scoped>
 .creator-home {
   display: grid;
-  gap: 12px;
+  grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.75fr);
+  align-items: start;
+  gap: 24px;
 }
 
 .home-section {
-  overflow: hidden;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.94);
+  min-width: 0;
 }
 
 .section-heading {
@@ -88,7 +90,7 @@ defineEmits<{
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid #e2e8f0;
-  padding: 8px 12px;
+  padding: 8px 2px 10px;
 }
 
 .section-heading h2 {
@@ -97,26 +99,40 @@ defineEmits<{
   font-size: 15px;
 }
 
-.section-heading span {
+.section-heading span,
+.heading-actions button {
   color: #0f766e;
   font-size: 12px;
   font-weight: 740;
 }
 
+.heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.heading-actions button {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  padding: 4px 0;
+}
+
 .tool-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
-  padding: 12px;
+  padding: 12px 0;
 }
 
 .tool-card {
   display: grid;
-  min-height: 94px;
-  align-content: center;
-  justify-items: start;
-  gap: 9px;
-  border: 1px solid #edf1f5;
+  min-height: 72px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #dbe4ee;
   border-radius: 6px;
   background: #fff;
   color: #0f766e;
@@ -143,7 +159,7 @@ defineEmits<{
 
 .empty-row,
 .recent-row {
-  padding: 11px 12px;
+  padding: 11px 2px;
 }
 
 .empty-row {
@@ -180,8 +196,8 @@ defineEmits<{
 }
 
 @media (max-width: 980px) {
-  .tool-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .creator-home {
+    grid-template-columns: 1fr;
   }
 }
 

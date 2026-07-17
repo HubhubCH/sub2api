@@ -20,6 +20,7 @@ export interface CreatorTextCompletionRequest {
   mode: CreatorTextMode
   prompt: string
   targetLanguage?: string
+  signal?: AbortSignal
 }
 
 export interface CreatorTextCompletionResult {
@@ -27,28 +28,7 @@ export interface CreatorTextCompletionResult {
   raw: unknown
 }
 
-export interface CreatorAudioTranscribeRequest {
-  apiKey: string
-  model: string
-  file: File
-  language: string
-}
-
-export interface CreatorSpeechRequest {
-  apiKey: string
-  model: string
-  text: string
-  language: string
-  style: string
-  voice: string
-  format: 'mp3' | 'wav'
-}
-
-export interface CreatorSpeechResult {
-  blob: Blob
-  transcript: string
-  raw: unknown
-}
+const GATEWAY_TIMEOUT_MS = 60_000
 
 function bearerHeaders(apiKey: string) {
   return {
@@ -59,6 +39,49 @@ function bearerHeaders(apiKey: string) {
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? value as Record<string, unknown> : null
+}
+
+function isAbortError(error: unknown): boolean {
+  return asRecord(error)?.name === 'AbortError'
+}
+
+async function gatewayRequest<T>(
+  path: string,
+  init: RequestInit,
+  handleResponse: (response: Response) => Promise<T>,
+  callerSignal?: AbortSignal
+): Promise<T> {
+  const controller = new AbortController()
+  let timedOut = false
+  let cancelled = false
+  const abortFromCaller = () => {
+    cancelled = true
+    controller.abort()
+  }
+
+  if (callerSignal?.aborted) abortFromCaller()
+  else callerSignal?.addEventListener('abort', abortFromCaller, { once: true })
+
+  const timeoutId = globalThis.setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, GATEWAY_TIMEOUT_MS)
+
+  try {
+    const response = await fetch(buildGatewayUrl(path), {
+      ...init,
+      signal: controller.signal,
+    })
+    return await handleResponse(response)
+  } catch (error) {
+    if (!isAbortError(error)) throw error
+    if (timedOut) throw new Error('网关请求超时，请稍后重试')
+    if (cancelled) throw new Error('请求已取消')
+    throw new Error('网关请求已中止，请重试')
+  } finally {
+    globalThis.clearTimeout(timeoutId)
+    callerSignal?.removeEventListener('abort', abortFromCaller)
+  }
 }
 
 async function parseGatewayError(response: Response): Promise<Error> {
@@ -78,6 +101,16 @@ function extractTextContent(payload: unknown): string {
   const outputText = String(root?.output_text || '').trim()
   if (outputText) return outputText
 
+  const output = Array.isArray(root?.output) ? root.output : []
+  for (const item of output) {
+    const content = asRecord(item)?.content
+    if (!Array.isArray(content)) continue
+    for (const part of content) {
+      const text = String(asRecord(part)?.text || '').trim()
+      if (text) return text
+    }
+  }
+
   const choices = Array.isArray(root?.choices) ? root?.choices : []
   for (const choice of choices) {
     const choiceRecord = asRecord(choice)
@@ -88,78 +121,17 @@ function extractTextContent(payload: unknown): string {
 
   return ''
 }
-
-function extractAudioData(payload: unknown): { data: string; transcript: string } {
-  const root = asRecord(payload)
-  const choices = Array.isArray(root?.choices) ? root?.choices : []
-  for (const choice of choices) {
-    const message = asRecord(asRecord(choice)?.message)
-    const audio = asRecord(message?.audio)
-    const data = String(audio?.data || '').trim()
-    if (data) {
-      return {
-        data,
-        transcript: String(audio?.transcript || message?.content || '').trim(),
-      }
-    }
-  }
-  return { data: '', transcript: '' }
-}
-
 function isTextModelName(model: string): boolean {
   const normalized = model.trim().toLowerCase()
   if (!normalized) return false
   return !/(image|imagine|video|sora|audio|speech|tts|whisper|transcrib)/i.test(normalized)
 }
 
-function isTranscriptionModelName(model: string): boolean {
-  const normalized = model.trim()
-  if (/realtime|tts|speech|asr|transcribe|transcription|whisper/i.test(normalized)) return false
-  return /(?:gpt.*audio|audio.*preview)/i.test(normalized)
-}
-
-function isSpeechModelName(model: string): boolean {
-  const normalized = model.trim()
-  if (/realtime|tts|speech|asr|transcribe|transcription|whisper/i.test(normalized)) return false
-  return /(?:gpt.*audio|audio.*preview)/i.test(normalized)
-}
-
-function audioFormatForFile(file: File): 'mp3' | 'wav' {
-  const name = file.name.toLowerCase()
-  const type = file.type.toLowerCase()
-  if (name.endsWith('.wav') || type.includes('wav')) return 'wav'
-  if (name.endsWith('.mp3') || type.includes('mpeg') || type.includes('mp3')) return 'mp3'
-  throw new Error('仅支持上传 WAV 或 MP3 音频文件')
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = ''
-  const chunkSize = 0x8000
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    binary += String.fromCharCode(...bytes.slice(index, index + chunkSize))
-  }
-  return btoa(binary)
-}
-
-function base64ToBlob(base64: string, mimeType: string): Blob {
-  const binary = atob(base64)
-  const bytes = new Uint8Array(binary.length)
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index)
-  }
-  return new Blob([bytes], { type: mimeType })
-}
-
-async function fileToBase64(file: File): Promise<string> {
-  const buffer = typeof file.arrayBuffer === 'function'
-    ? await file.arrayBuffer()
-    : await new Promise<ArrayBuffer>((resolve, reject) => {
-        const reader = new FileReader()
-        reader.onload = () => resolve(reader.result as ArrayBuffer)
-        reader.onerror = () => reject(new Error('音频文件读取失败'))
-        reader.readAsArrayBuffer(file)
-      })
-  return bytesToBase64(new Uint8Array(buffer))
+function usesResponsesEndpoint(model: string): boolean {
+  const normalized = model.trim().toLowerCase()
+  return /^gpt-5(?:$|[-.])/.test(normalized) ||
+    /^o(?:1|3|4)(?:$|[-.])/.test(normalized) ||
+    normalized.includes('codex')
 }
 
 export function isUsableCreatorKey(key: CreatorKeyLike, now = new Date()): boolean {
@@ -186,156 +158,57 @@ export function buildCreatorTextMessages(request: Pick<CreatorTextCompletionRequ
 }
 
 export async function listTextModels(apiKey: string): Promise<string[]> {
-  const response = await fetch(buildGatewayUrl('/v1/models'), {
+  return gatewayRequest('/v1/models', {
     headers: {
       Authorization: `Bearer ${apiKey.trim()}`,
     },
+  }, async (response) => {
+    if (!response.ok) throw await parseGatewayError(response)
+
+    const payload = await response.json()
+    const root = asRecord(payload)
+    const items = Array.isArray(payload) ? payload : root?.data
+    if (!Array.isArray(items)) return []
+
+    return Array.from(new Set(
+      items
+        .map((item) => String(asRecord(item)?.id || '').trim())
+        .filter(isTextModelName)
+    ))
   })
-  if (!response.ok) throw await parseGatewayError(response)
-
-  const payload = await response.json()
-  const root = asRecord(payload)
-  const items = Array.isArray(payload) ? payload : root?.data
-  if (!Array.isArray(items)) return []
-
-  return Array.from(new Set(
-    items
-      .map((item) => String(asRecord(item)?.id || '').trim())
-      .filter(isTextModelName)
-  ))
-}
-
-async function listModelsByCapability(apiKey: string, predicate: (model: string) => boolean): Promise<string[]> {
-  const response = await fetch(buildGatewayUrl('/v1/models'), {
-    headers: {
-      Authorization: `Bearer ${apiKey.trim()}`,
-    },
-  })
-  if (!response.ok) throw await parseGatewayError(response)
-
-  const payload = await response.json()
-  const root = asRecord(payload)
-  const items = Array.isArray(payload) ? payload : root?.data
-  if (!Array.isArray(items)) return []
-
-  return Array.from(new Set(
-    items
-      .map((item) => String(asRecord(item)?.id || '').trim())
-      .filter(predicate)
-  ))
-}
-
-export function listTranscriptionModels(apiKey: string): Promise<string[]> {
-  return listModelsByCapability(apiKey, isTranscriptionModelName)
-}
-
-export function listSpeechModels(apiKey: string): Promise<string[]> {
-  return listModelsByCapability(apiKey, isSpeechModelName)
 }
 
 export async function createTextCompletion(request: CreatorTextCompletionRequest): Promise<CreatorTextCompletionResult> {
-  const payload = {
-    model: request.model,
-    messages: buildCreatorTextMessages(request),
-    temperature: 0.4,
-    stream: false,
-  }
+  const messages = buildCreatorTextMessages(request)
+  const useResponses = usesResponsesEndpoint(request.model)
+  const payload = useResponses
+    ? {
+        model: request.model,
+        input: messages,
+        stream: false,
+      }
+    : {
+        model: request.model,
+        messages,
+        temperature: 0.4,
+        stream: false,
+      }
 
-  const response = await fetch(buildGatewayUrl('/v1/chat/completions'), {
+  return gatewayRequest(useResponses ? '/v1/responses' : '/v1/chat/completions', {
     method: 'POST',
     headers: bearerHeaders(request.apiKey),
     body: JSON.stringify(payload),
-  })
+  }, async (response) => {
+    if (!response.ok) throw await parseGatewayError(response)
 
-  if (!response.ok) throw await parseGatewayError(response)
-
-  const body = await response.json()
-  const content = extractTextContent(body)
-  if (!content) throw new Error('文本接口已返回，但没有可展示的内容')
-  return { content, raw: body }
-}
-
-export async function transcribeCreatorAudio(request: CreatorAudioTranscribeRequest): Promise<CreatorTextCompletionResult> {
-  const format = audioFormatForFile(request.file)
-  const data = await fileToBase64(request.file)
-  const payload = {
-    model: request.model,
-    messages: [
-      {
-        role: 'system',
-        content: `请转写用户上传的音频，只输出${request.language || '中文'}文本。`,
-      },
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'input_audio',
-            input_audio: { data, format },
-          },
-        ],
-      },
-    ],
-    temperature: 0,
-    stream: false,
-  }
-
-  const response = await fetch(buildGatewayUrl('/v1/chat/completions'), {
-    method: 'POST',
-    headers: bearerHeaders(request.apiKey),
-    body: JSON.stringify(payload),
-  })
-  if (!response.ok) throw await parseGatewayError(response)
-
-  const body = await response.json()
-  const content = extractTextContent(body)
-  if (!content) throw new Error('转写接口已返回，但没有可展示的文本')
-  return { content, raw: body }
-}
-
-export async function synthesizeCreatorSpeech(request: CreatorSpeechRequest): Promise<CreatorSpeechResult> {
-  const payload = {
-    model: request.model,
-    modalities: ['text', 'audio'],
-    audio: {
-      voice: request.voice,
-      format: request.format,
-    },
-    messages: [
-      {
-        role: 'system',
-        content: `请用${request.language || '中文'}生成配音，风格要求：${request.style || '自然清晰'}。`,
-      },
-      {
-        role: 'user',
-        content: request.text,
-      },
-    ],
-    stream: false,
-  }
-
-  const response = await fetch(buildGatewayUrl('/v1/chat/completions'), {
-    method: 'POST',
-    headers: bearerHeaders(request.apiKey),
-    body: JSON.stringify(payload),
-  })
-  if (!response.ok) throw await parseGatewayError(response)
-
-  const body = await response.json()
-  const audio = extractAudioData(body)
-  if (!audio.data) throw new Error('配音接口已返回，但没有音频数据')
-  const mimeType = request.format === 'wav' ? 'audio/wav' : 'audio/mpeg'
-  return {
-    blob: base64ToBlob(audio.data, mimeType),
-    transcript: audio.transcript,
-    raw: body,
-  }
+    const body = await response.json()
+    const content = extractTextContent(body)
+    if (!content) throw new Error('文本接口已返回，但没有可展示的内容')
+    return { content, raw: body }
+  }, request.signal)
 }
 
 export const onlineCreatorAPI = {
   listTextModels,
   createTextCompletion,
-  listTranscriptionModels,
-  listSpeechModels,
-  transcribeCreatorAudio,
-  synthesizeCreatorSpeech,
 }

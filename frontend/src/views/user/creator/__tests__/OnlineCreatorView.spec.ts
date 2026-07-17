@@ -4,11 +4,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 const listKeys = vi.hoisted(() => vi.fn())
 const getUserGroupRates = vi.hoisted(() => vi.fn())
 const listTextModels = vi.hoisted(() => vi.fn())
-const listTranscriptionModels = vi.hoisted(() => vi.fn())
-const listSpeechModels = vi.hoisted(() => vi.fn())
 const createTextCompletion = vi.hoisted(() => vi.fn())
-const transcribeCreatorAudio = vi.hoisted(() => vi.fn())
-const synthesizeCreatorSpeech = vi.hoisted(() => vi.fn())
 const listImageModels = vi.hoisted(() => vi.fn())
 const generateImage = vi.hoisted(() => vi.fn())
 const editImage = vi.hoisted(() => vi.fn())
@@ -18,6 +14,7 @@ const getVideoStatus = vi.hoisted(() => vi.fn())
 const downloadVideoContent = vi.hoisted(() => vi.fn())
 const submitBatchImageJob = vi.hoisted(() => vi.fn())
 const listBatchImageModels = vi.hoisted(() => vi.fn())
+const listBatchImageJobs = vi.hoisted(() => vi.fn())
 const getBatchImageJob = vi.hoisted(() => vi.fn())
 const listBatchImageItems = vi.hoisted(() => vi.fn())
 const getBatchImageItemContent = vi.hoisted(() => vi.fn())
@@ -45,11 +42,7 @@ vi.mock('@/api/onlineCreator', async (importOriginal) => {
     onlineCreatorAPI: {
       ...actual.onlineCreatorAPI,
       listTextModels,
-      listTranscriptionModels,
-      listSpeechModels,
       createTextCompletion,
-      transcribeCreatorAudio,
-      synthesizeCreatorSpeech,
     },
   }
 })
@@ -74,6 +67,7 @@ vi.mock('@/api/videoGeneration', () => ({
 
 vi.mock('@/api/batchImage', () => ({
   listBatchImageModels,
+  listBatchImageJobs,
   submitBatchImageJob,
   getBatchImageJob,
   listBatchImageItems,
@@ -128,9 +122,30 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
+function batchJob(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'batch-history-1',
+    object: 'image.batch',
+    task_name: 'batch-clone-1784250000000',
+    status: 'completed',
+    model: 'gemini-2.5-flash-image',
+    provider: 'gemini_api',
+    item_count: 2,
+    success_count: 2,
+    fail_count: 0,
+    estimated_cost: 0.1,
+    hold_amount: 0.1,
+    actual_cost: 0.1,
+    created_at: Math.floor(Date.now() / 1000) - 60,
+    submitted_at: Math.floor(Date.now() / 1000) - 59,
+    settled_at: Math.floor(Date.now() / 1000) - 50,
+    ...overrides,
+  }
+}
+
 function installCanvasImageMocks() {
   const drawImage = vi.fn()
-  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage } as never)
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage, clearRect: vi.fn() } as never)
   vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (callback) {
     callback(new Blob([new Uint8Array([7, 8, 9])], { type: 'image/png' }))
   })
@@ -153,11 +168,7 @@ describe('OnlineCreatorView', () => {
     listKeys.mockReset()
     getUserGroupRates.mockReset()
     listTextModels.mockReset()
-    listTranscriptionModels.mockReset()
-    listSpeechModels.mockReset()
     createTextCompletion.mockReset()
-    transcribeCreatorAudio.mockReset()
-    synthesizeCreatorSpeech.mockReset()
     listImageModels.mockReset()
     generateImage.mockReset()
     editImage.mockReset()
@@ -167,6 +178,7 @@ describe('OnlineCreatorView', () => {
     downloadVideoContent.mockReset()
     submitBatchImageJob.mockReset()
     listBatchImageModels.mockReset()
+    listBatchImageJobs.mockReset()
     getBatchImageJob.mockReset()
     listBatchImageItems.mockReset()
     getBatchImageItemContent.mockReset()
@@ -174,6 +186,8 @@ describe('OnlineCreatorView', () => {
     saveBlob.mockReset()
     listRecords.mockReset()
     getRecordContent.mockReset()
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn((file: File) => `blob:${file.name || 'preview'}`) })
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
 
     listKeys.mockResolvedValue({
       items: [
@@ -184,16 +198,16 @@ describe('OnlineCreatorView', () => {
     })
     getUserGroupRates.mockResolvedValue({})
     listTextModels.mockResolvedValue(['gpt-4o-mini'])
-    listTranscriptionModels.mockResolvedValue(['gpt-4o-audio-preview'])
-    listSpeechModels.mockResolvedValue(['gpt-4o-audio-preview'])
     listImageModels.mockResolvedValue(['gpt-image-1'])
     listVideoModels.mockResolvedValue(['grok-imagine-video'])
     listBatchImageModels.mockResolvedValue({ data: [{ id: 'gemini-2.5-flash-image', provider: 'gemini_api' }] })
+    listBatchImageJobs.mockResolvedValue({ object: 'list', data: [], has_more: false })
     listRecords.mockResolvedValue([
       {
         task_id: 'record-image-1',
         api_key_id: 1,
         media_type: 'image',
+        creator_tool: 'image',
         provider: 'openai',
         model: 'gpt-image-1',
         prompt_preview: '最近的主图',
@@ -213,12 +227,15 @@ describe('OnlineCreatorView', () => {
   it('显示完整工具导航、首页矩阵并过滤不可用密钥', async () => {
     const wrapper = await mountReadyView()
 
-    for (const id of ['home', 'image', 'edit', 'assistant', 'product-copy', 'image-translate', 'batch-main', 'batch-clone', 'watermark', 'video', 'transcription', 'speech', 'history']) {
+    for (const id of ['home', 'image', 'edit', 'product-copy', 'outpaint', 'batch-main', 'batch-clone', 'watermark', 'video', 'history']) {
       expect(wrapper.find(`[data-test="creator-tool-${id}"]`).exists()).toBe(true)
     }
+    expect(wrapper.find('[data-test="creator-tool-assistant"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="creator-tool-transcription"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="creator-tool-speech"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="creator-tool-home"]').classes()).toContain('active')
-    expect(wrapper.text()).toContain('工具矩阵')
-    expect(wrapper.text()).toContain('最近创作')
+    expect(wrapper.text()).toContain('创作工具')
+    expect(wrapper.text()).toContain('最近记录')
 
     await wrapper.find('[data-test="creator-tool-image"]').trigger('click')
     expect(wrapper.find('[data-test="creator-tool-image"]').classes()).toContain('active')
@@ -236,24 +253,111 @@ describe('OnlineCreatorView', () => {
     expect(wrapper.find('[data-test="creator-tool-home"]').classes()).not.toContain('active')
   })
 
-  it('提交文本工具请求并展示结果', async () => {
-    createTextCompletion.mockResolvedValue({ content: '一段可直接使用的中文文案' })
+  it('各工具页只显示本工具记录，首页和历史页合并显示', async () => {
+    listRecords.mockResolvedValue([
+      {
+        task_id: 'record-image', api_key_id: 1, media_type: 'image', creator_tool: 'image', provider: 'openai', model: 'gpt-image-1',
+        prompt_preview: '生图页面记录', status: 'completed', result: null, created_at: '2026-07-17T05:00:00Z',
+      },
+      {
+        task_id: 'record-edit', api_key_id: 1, media_type: 'image', creator_tool: 'edit', provider: 'openai', model: 'gpt-image-1',
+        prompt_preview: '编辑页面记录', status: 'completed', result: null, created_at: '2026-07-17T04:00:00Z',
+      },
+    ])
     const wrapper = await mountReadyView()
 
-    await wrapper.find('[data-test="creator-tool-assistant"]').trigger('click')
-    await wrapper.find('[data-test="creator-prompt"]').setValue('写一个耳机商品标题')
-    await wrapper.find('[data-test="creator-submit"]').trigger('submit')
-    await flushPromises()
+    expect(wrapper.text()).toContain('生图页面记录')
+    expect(wrapper.text()).toContain('编辑页面记录')
+    await wrapper.find('[data-test="creator-tool-image"]').trigger('click')
+    expect(wrapper.text()).toContain('生图页面记录')
+    expect(wrapper.text()).not.toContain('编辑页面记录')
+    await wrapper.find('[data-test="creator-tool-edit"]').trigger('click')
+    expect(wrapper.text()).toContain('编辑页面记录')
+    expect(wrapper.text()).not.toContain('生图页面记录')
+    await wrapper.find('[data-test="creator-tool-history"]').trigger('click')
+    expect(wrapper.text()).toContain('生图页面记录')
+    expect(wrapper.text()).toContain('编辑页面记录')
+    const editRecord = wrapper.findAll('.history-card-action').find((item) => item.text().includes('编辑页面记录'))
+    await editRecord?.trigger('click')
+    expect(wrapper.find('[data-test="creator-tool-edit"]').classes()).toContain('active')
+  })
 
-    expect(createTextCompletion).toHaveBeenCalledWith({
-      apiKey: 'sk-live',
-      model: 'gpt-4o-mini',
-      mode: 'chat',
-      prompt: '用户：写一个耳机商品标题',
-      targetLanguage: '中文',
+  it('首页最多显示三条最近记录并可进入历史记录', async () => {
+    listRecords.mockResolvedValue(Array.from({ length: 4 }, (_, index) => ({
+      task_id: `home-record-${index + 1}`,
+      api_key_id: 1,
+      media_type: 'image',
+      creator_tool: 'image',
+      provider: 'openai',
+      model: 'gpt-image-1',
+      prompt_preview: `首页记录 ${index + 1}`,
+      status: 'completed',
+      result: null,
+      created_at: `2026-07-17T0${5 - index}:00:00Z`,
+    })))
+    const wrapper = await mountReadyView()
+
+    expect(wrapper.findAll('.recent-row')).toHaveLength(3)
+    expect(wrapper.text()).not.toContain('首页记录 4')
+    await wrapper.find('.heading-actions button').trigger('click')
+    expect(wrapper.find('[data-test="creator-tool-history"]').classes()).toContain('active')
+  })
+
+  it('刷新后把当前密钥的原生批量任务合并到首页、对应工具和历史记录', async () => {
+    listRecords.mockResolvedValue([])
+    listBatchImageJobs.mockResolvedValue({
+      object: 'list',
+      has_more: false,
+      data: [
+        batchJob(),
+        batchJob({ id: 'batch-expired', task_name: 'batch-main-expired', item_count: 99, created_at: Math.floor(Date.now() / 1000) - (73 * 60 * 60) }),
+      ],
     })
-    expect(wrapper.text()).toContain('一段可直接使用的中文文案')
-    expect(wrapper.text()).toContain('写一个耳机商品标题')
+    const wrapper = await mountReadyView()
+
+    expect(listBatchImageJobs).toHaveBeenCalledWith('sk-live', { limit: 10, from: expect.any(String) })
+    expect(wrapper.text()).toContain('批量克隆，共 2 张')
+    expect(wrapper.text()).not.toContain('批量主图，共 99 张')
+    await wrapper.find('[data-test="creator-tool-batch-clone"]').trigger('click')
+    expect(wrapper.text()).toContain('批量克隆，共 2 张')
+    await wrapper.find('[data-test="creator-tool-batch-main"]').trigger('click')
+    expect(wrapper.text()).not.toContain('批量克隆，共 2 张')
+    await wrapper.find('[data-test="creator-tool-history"]').trigger('click')
+    expect(wrapper.text()).toContain('批量克隆，共 2 张')
+  })
+
+  it('合并多个密钥的批量记录且单个密钥失败不影响其他记录', async () => {
+    listKeys.mockResolvedValue({
+      items: [
+        { id: 1, name: '密钥一', key: 'sk-one', status: 'active', quota: 0, quota_used: 0, expires_at: null },
+        { id: 2, name: '密钥二', key: 'sk-failed', status: 'active', quota: 0, quota_used: 0, expires_at: null },
+        { id: 3, name: '密钥三', key: 'sk-three', status: 'active', quota: 0, quota_used: 0, expires_at: null },
+      ],
+    })
+    listRecords.mockResolvedValue([{
+      task_id: 'record-image', api_key_id: 1, media_type: 'image', creator_tool: 'image', provider: 'openai', model: 'gpt-image-1',
+      prompt_preview: '普通生成记录', status: 'completed', result: null, created_at: new Date().toISOString(),
+    }])
+    listBatchImageJobs.mockImplementation(async (apiKey: string) => {
+      if (apiKey === 'sk-failed') throw new Error('该密钥批量接口不可用')
+      return {
+        object: 'list',
+        has_more: false,
+        data: [batchJob({
+          id: apiKey === 'sk-one' ? 'batch-one' : 'batch-three',
+          task_name: apiKey === 'sk-one' ? 'batch-main-one' : 'batch-clone-three',
+          item_count: apiKey === 'sk-one' ? 1 : 3,
+        })],
+      }
+    })
+
+    const wrapper = await mountReadyView()
+
+    expect(listBatchImageJobs).toHaveBeenCalledTimes(3)
+    expect(wrapper.text()).toContain('普通生成记录')
+    expect(wrapper.text()).toContain('批量主图，共 1 张')
+    expect(wrapper.text()).toContain('批量克隆，共 3 张')
+    expect(wrapper.text()).not.toContain('该密钥批量接口不可用')
   })
 
   it('商品文案使用商品名、商品信息、平台和语言字段', async () => {
@@ -296,6 +400,8 @@ describe('OnlineCreatorView', () => {
       quality: 'high',
       count: 1,
       outputFormat: 'png',
+      creatorTool: 'image',
+      signal: expect.any(Object),
     })
     expect(wrapper.find('img[alt="创作结果"]').attributes('src')).toContain('data:image/png;base64,aW1hZ2U=')
   })
@@ -348,7 +454,9 @@ describe('OnlineCreatorView', () => {
       quality: 'medium',
       count: 1,
       outputFormat: 'png',
+      creatorTool: 'image',
       background: 'transparent',
+      signal: expect.any(Object),
     })
   })
 
@@ -363,24 +471,64 @@ describe('OnlineCreatorView', () => {
     expect(wrapper.find('[data-test="creator-image-cost"]').text()).toContain('约 $0.0700')
   })
 
-  it('图片翻译上传原图后调用 editImage 并保留构图风格提示', async () => {
+  it('图片扩图生成透明扩展画布并调用图片编辑', async () => {
+    installCanvasImageMocks()
     editImage.mockResolvedValue({ data: [{ b64_json: 'aW1hZ2U=' }] })
     const wrapper = await mountReadyView()
     const file = new File([new Uint8Array([1])], 'poster.png', { type: 'image/png' })
 
-    await wrapper.find('[data-test="creator-tool-image-translate"]').trigger('click')
+    await wrapper.find('[data-test="creator-tool-outpaint"]').trigger('click')
+    await wrapper.find('[data-test="creator-outpaint-right"]').trigger('click')
+    await wrapper.find('[data-test="creator-outpaint-ratio"]').setValue('1')
     await setInputFiles(wrapper, '#creator-image-file', [file])
-    await wrapper.find('[data-test="creator-prompt"]').setValue('翻译成适合日本市场的表达')
     await wrapper.find('[data-test="creator-submit"]').trigger('submit')
     await flushPromises()
 
     expect(editImage.mock.calls[0][0]).toMatchObject({
       apiKey: 'sk-live',
       model: 'gpt-image-1',
-      image: file,
+      size: '1536x1024',
+      creatorTool: 'outpaint',
     })
-    expect(editImage.mock.calls[0][0].prompt).toContain('保留原图构图、风格')
-    expect(editImage.mock.calls[0][0].prompt).toContain('本地化为中文')
+    expect(editImage.mock.calls[0][0].image.name).toBe('outpaint-source.png')
+    expect(editImage.mock.calls[0][0].prompt).toContain('仅自然补全透明扩展区域')
+    expect(editImage.mock.calls[0][0].prompt).toContain('扩图方向：向右')
+  })
+
+  it('扩图预处理期间切换工具仍使用提交时的模型和提示词', async () => {
+    installCanvasImageMocks()
+    let finishImageLoad: (() => void) | undefined
+    vi.stubGlobal('Image', class {
+      onload: null | (() => void) = null
+      onerror: null | (() => void) = null
+      naturalWidth = 100
+      naturalHeight = 100
+      width = 100
+      height = 100
+      set src(_value: string) {
+        finishImageLoad = () => this.onload?.()
+      }
+    })
+    editImage.mockResolvedValue({ data: [{ b64_json: 'aW1hZ2U=' }] })
+    const wrapper = await mountReadyView()
+    const file = new File([new Uint8Array([1])], 'outpaint.png', { type: 'image/png' })
+
+    await wrapper.find('[data-test="creator-tool-outpaint"]').trigger('click')
+    await wrapper.find('[data-test="creator-outpaint-right"]').trigger('click')
+    await wrapper.find('[data-test="creator-prompt"]').setValue('延展原图天空')
+    await setInputFiles(wrapper, '#creator-image-file', [file])
+    await wrapper.find('[data-test="creator-submit"]').trigger('submit')
+    expect(finishImageLoad).toBeTypeOf('function')
+
+    await wrapper.find('[data-test="creator-tool-product-copy"]').trigger('click')
+    await wrapper.find('[data-test="creator-prompt"]').setValue('另一工具的新提示词')
+    finishImageLoad?.()
+    await flushPromises()
+
+    expect(editImage.mock.calls[0][0]).toMatchObject({ model: 'gpt-image-1', creatorTool: 'outpaint' })
+    expect(editImage.mock.calls[0][0].prompt).toContain('扩图方向：向右')
+    expect(editImage.mock.calls[0][0].prompt).toContain('补充要求：延展原图天空')
+    expect(editImage.mock.calls[0][0].prompt).not.toContain('另一工具的新提示词')
   })
 
   it('批量主图界面最多接收 6 张商品图', async () => {
@@ -391,7 +539,7 @@ describe('OnlineCreatorView', () => {
     await wrapper.find('[data-test="creator-tool-batch-main"]').trigger('click')
     await flushPromises()
     await setInputFiles(wrapper, '#creator-batch-files', files)
-    expect(wrapper.text()).toContain('已选择 6 张商品图')
+    expect(wrapper.text()).toContain('已选择 6 / 6 张')
   })
 
   it('批量克隆提供参考图和商品图入口', async () => {
@@ -404,8 +552,31 @@ describe('OnlineCreatorView', () => {
     await flushPromises()
     await setInputFiles(wrapper, '#creator-reference-file', [reference])
     await setInputFiles(wrapper, '#creator-batch-files', [product])
-    expect(wrapper.text()).toContain('ref.png')
-    expect(wrapper.text()).toContain('已选择 1 张商品图')
+    expect(wrapper.find('img[alt="ref.png"]').exists()).toBe(true)
+    expect(wrapper.find('img[alt="sku.png"]').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('ref.png')
+    expect(wrapper.text()).not.toContain('sku.png')
+    expect(wrapper.text()).toContain('已选择 1 / 6 张')
+  })
+
+  it('批量 API 未启用时使用普通图片模型逐张处理', async () => {
+    listBatchImageModels.mockRejectedValue(Object.assign(new Error('batch image API is disabled'), { status: 403 }))
+    editImage.mockResolvedValue({ data: [{ b64_json: 'ZmFsbGJhY2s=' }] })
+    const wrapper = await mountReadyView('batch-main')
+    const product = new File([new Uint8Array([1])], 'sku.png', { type: 'image/png' })
+
+    expect(wrapper.text()).not.toContain('模型加载失败')
+    await setInputFiles(wrapper, '#creator-batch-files', [product])
+    await wrapper.find('[data-test="creator-submit"]').trigger('submit')
+    await vi.waitFor(() => expect(editImage).toHaveBeenCalledTimes(1))
+
+    expect(submitBatchImageJob).not.toHaveBeenCalled()
+    expect(editImage.mock.calls[0][0]).toMatchObject({
+      apiKey: 'sk-live',
+      model: 'gpt-image-1',
+      image: product,
+    })
+    await vi.waitFor(() => expect(wrapper.text()).toContain('已自动改用逐张图片编辑'))
   })
 
   it('批量克隆仅在端点明确不支持时用参考图和商品图合成后逐张兜底', async () => {
@@ -538,32 +709,53 @@ describe('OnlineCreatorView', () => {
     createTextCompletion.mockRejectedValue(new Error('模型不可用'))
     const wrapper = await mountReadyView()
 
-    await wrapper.find('[data-test="creator-tool-assistant"]').trigger('click')
+    await wrapper.find('[data-test="creator-tool-product-copy"]').trigger('click')
+    const inputs = wrapper.findAll('input.field-control')
+    await inputs[0].setValue('失败商品')
+    await wrapper.find('textarea.field-control').setValue('失败测试信息')
     await wrapper.find('[data-test="creator-prompt"]').setValue('测试失败')
     await wrapper.find('[data-test="creator-submit"]').trigger('submit')
     await flushPromises()
 
     expect(wrapper.text()).toContain('模型不可用')
-    expect(listRecords).toHaveBeenCalledWith(8)
-    expect(wrapper.text()).toContain('最近的主图')
-    expect(wrapper.findAll('.message-row')).toHaveLength(0)
+    expect(listRecords).toHaveBeenCalledWith(10)
+    expect(wrapper.text()).not.toContain('最近的主图')
   })
 
-  it('请求期间禁用工具、密钥和模型切换', async () => {
+  it('切换工具后旧请求继续，且各工具结果互不覆盖', async () => {
     const pending = deferred<{ content: string }>()
     createTextCompletion.mockReturnValue(pending.promise)
+    generateImage.mockResolvedValue({ data: [{ b64_json: 'aW1hZ2U=' }] })
     const wrapper = await mountReadyView()
 
-    await wrapper.find('[data-test="creator-tool-assistant"]').trigger('click')
+    await wrapper.find('[data-test="creator-tool-product-copy"]').trigger('click')
+    const inputs = wrapper.findAll('input.field-control')
+    await inputs[0].setValue('等待商品')
+    await wrapper.find('textarea.field-control').setValue('等待中的商品信息')
     await wrapper.find('[data-test="creator-prompt"]').setValue('等待中的请求')
     await wrapper.find('[data-test="creator-submit"]').trigger('submit')
     await Promise.resolve()
 
-    expect(wrapper.find('[data-test="creator-tool-image"]').attributes('disabled')).toBeDefined()
+    const requestSignal = createTextCompletion.mock.calls[0][0].signal as AbortSignal
+    expect(wrapper.find('[data-test="creator-tool-image"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.find('[data-test="creator-key"] select').attributes('disabled')).toBeDefined()
     expect(wrapper.find('select.field-control').attributes('disabled')).toBeDefined()
+    await wrapper.find('[data-test="creator-tool-image"]').trigger('click')
+    expect(requestSignal.aborted).toBe(false)
+    expect(wrapper.find('[data-test="creator-tool-image"]').classes()).toContain('active')
+    expect(wrapper.find('[data-test="creator-key"] select').attributes('disabled')).toBeUndefined()
+    await wrapper.find('[data-test="creator-prompt"]').setValue('并行生成图片')
+    await wrapper.find('[data-test="creator-submit"]').trigger('submit')
+    await flushPromises()
+    expect(wrapper.find('img[alt="创作结果"]').exists()).toBe(true)
+
     pending.resolve({ content: '完成' })
     await flushPromises()
+    expect(wrapper.find('.text-output').exists()).toBe(false)
+    expect(wrapper.find('img[alt="创作结果"]').exists()).toBe(true)
+
+    await wrapper.find('[data-test="creator-tool-product-copy"]').trigger('click')
+    expect(wrapper.find('.text-output').text()).toContain('完成')
   })
 
   it('按 Agnes 模型推断供应商并轮询视频结果到可播放下载状态', async () => {
@@ -710,9 +902,10 @@ describe('OnlineCreatorView', () => {
     wrapper.unmount()
   })
 
-  it('切换工具或卸载时取消视频轮询', async () => {
+  it('切换工具后继续视频轮询，卸载时停止', async () => {
     vi.useFakeTimers()
     generateVideo.mockResolvedValue({ request_id: 'video-pending', status: 'queued' })
+    getVideoStatus.mockResolvedValue({ request_id: 'video-pending', status: 'processing' })
     const wrapper = await mountReadyView()
 
     await wrapper.find('[data-test="creator-tool-video"]').trigger('click')
@@ -721,43 +914,46 @@ describe('OnlineCreatorView', () => {
     await flushPromises()
     await wrapper.find('[data-test="creator-tool-image"]').trigger('click')
     await vi.advanceTimersByTimeAsync(5000)
-    expect(getVideoStatus).not.toHaveBeenCalled()
+    await flushPromises()
+    expect(getVideoStatus).toHaveBeenCalledTimes(1)
 
     wrapper.unmount()
     await vi.advanceTimersByTimeAsync(5000)
-    expect(getVideoStatus).not.toHaveBeenCalled()
+    expect(getVideoStatus).toHaveBeenCalledTimes(1)
   })
 
-  it('从 files 记录读取 Blob 并在切换时释放历史预览 URL', async () => {
+  it('从 files 记录读取 Blob，切换工具保留预览并在卸载时释放 URL', async () => {
     const createObjectURL = vi.fn(() => 'blob:history-image')
     const revokeObjectURL = vi.fn()
     Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL })
     Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL })
     listRecords.mockResolvedValue([{
-      task_id: 'record-file-1', api_key_id: 1, media_type: 'image', provider: 'openai', model: 'gpt-image-1',
-      prompt_preview: '服务端文件', status: 'completed', result: { files: ['history.png'] }, created_at: '2026-07-16T00:00:00Z',
+      task_id: 'record-file-1', api_key_id: 1, media_type: 'image', creator_tool: 'image', provider: 'openai', model: 'gpt-image-1',
+      prompt_preview: '服务端文件', status: 'completed', result: { urls: ['https://cdn.example/expired.png'], files: ['history.png'] }, created_at: '2026-07-16T00:00:00Z',
     }])
     getRecordContent.mockResolvedValue(new Blob([new Uint8Array([1])], { type: 'image/png' }))
-    const wrapper = await mountReadyView()
+    const wrapper = await mountReadyView('image')
 
     await wrapper.find('button.record-item').trigger('click')
     await flushPromises()
     expect(getRecordContent).toHaveBeenCalledWith('record-file-1', 0)
     expect(wrapper.find('img[alt="创作结果"]').attributes('src')).toBe('blob:history-image')
     await wrapper.find('[data-test="creator-tool-image"]').trigger('click')
+    expect(revokeObjectURL).not.toHaveBeenCalledWith('blob:history-image')
+    wrapper.unmount()
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:history-image')
   })
 
   it('恢复记录失败前切换工具时不写入旧请求错误', async () => {
     listRecords.mockResolvedValue([{
-      task_id: 'record-stale-error', api_key_id: 1, media_type: 'image', provider: 'openai', model: 'gpt-image-1',
+      task_id: 'record-stale-error', api_key_id: 1, media_type: 'image', creator_tool: 'image', provider: 'openai', model: 'gpt-image-1',
       prompt_preview: '稍后失败的记录', status: 'completed', result: { files: ['stale.png'] }, created_at: '2026-07-16T00:00:00Z',
     }])
     let rejectContent!: (error: unknown) => void
     getRecordContent.mockReturnValue(new Promise((_resolve, reject) => {
       rejectContent = reject
     }))
-    const wrapper = await mountReadyView()
+    const wrapper = await mountReadyView('image')
 
     await wrapper.find('button.record-item').trigger('click')
     expect(getRecordContent).toHaveBeenCalledWith('record-stale-error', 0)
@@ -767,18 +963,6 @@ describe('OnlineCreatorView', () => {
 
     expect(wrapper.find('[data-test="creator-tool-image"]').classes()).toContain('active')
     expect(wrapper.text()).not.toContain('旧记录读取失败')
-  })
-
-  it('语音工具按转写和配音能力分别启用', async () => {
-    listSpeechModels.mockResolvedValue([])
-    const wrapper = await mountReadyView()
-
-    await wrapper.find('[data-test="creator-tool-speech"]').trigger('click')
-    expect(wrapper.find('[data-test="creator-submit-button"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.text()).toContain('当前密钥暂无可用配音模型')
-
-    await wrapper.find('[data-test="creator-tool-transcription"]').trigger('click')
-    expect(wrapper.text()).not.toContain('当前密钥暂无可用转写模型')
   })
 
   it('模型加载失败时显示原因并可重试恢复模型列表', async () => {
@@ -800,105 +984,4 @@ describe('OnlineCreatorView', () => {
     expect(wrapper.text()).not.toContain('图片模型加载失败，请重试')
   })
 
-  it('提交 WAV/MP3 音频转写并展示复制按钮', async () => {
-    transcribeCreatorAudio.mockResolvedValue({ content: '转写后的文本' })
-    const wrapper = await mountReadyView()
-
-    await wrapper.find('[data-test="creator-tool-transcription"]').trigger('click')
-    const file = new File([new Uint8Array([1, 2, 3])], 'voice.wav', { type: 'audio/wav' })
-    await setInputFiles(wrapper, '[data-test="creator-audio-file"]', [file])
-    await wrapper.find('[data-test="creator-submit"]').trigger('submit')
-    await flushPromises()
-
-    expect(transcribeCreatorAudio).toHaveBeenCalledWith({
-      apiKey: 'sk-live',
-      model: 'gpt-4o-audio-preview',
-      file,
-      language: '中文',
-    })
-    expect(wrapper.text()).toContain('转写后的文本')
-    expect(wrapper.find('[data-test="creator-copy-result"]').exists()).toBe(true)
-  })
-
-  it('提交 AI 配音并生成可播放音频', async () => {
-    synthesizeCreatorSpeech.mockResolvedValue({
-      blob: new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/mpeg' }),
-      transcript: '配音稿',
-    })
-    const createObjectURL = vi.fn(() => 'blob:voiceover')
-    const revokeObjectURL = vi.fn()
-    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL })
-    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL })
-
-    const wrapper = await mountReadyView()
-    await wrapper.find('[data-test="creator-tool-speech"]').trigger('click')
-    await wrapper.find('[data-test="creator-prompt"]').setValue('生成一段商品介绍配音')
-    await wrapper.find('[data-test="creator-submit"]').trigger('submit')
-    await flushPromises()
-
-    expect(synthesizeCreatorSpeech).toHaveBeenCalledWith({
-      apiKey: 'sk-live',
-      model: 'gpt-4o-audio-preview',
-      text: '生成一段商品介绍配音',
-      language: '中文',
-      style: '自然清晰',
-      voice: 'alloy',
-      format: 'mp3',
-    })
-    expect(wrapper.find('audio').attributes('src')).toBe('blob:voiceover')
-    wrapper.unmount()
-    expect(revokeObjectURL).toHaveBeenCalledWith('blob:voiceover')
-  })
-
-  it('配音请求在页面卸载后返回时不再创建 Blob URL', async () => {
-    const pending = deferred<{ blob: Blob; transcript: string }>()
-    synthesizeCreatorSpeech.mockReturnValue(pending.promise)
-    const createObjectURL = vi.fn(() => 'blob:stale-voiceover')
-    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL })
-    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
-    const wrapper = await mountReadyView()
-
-    await wrapper.find('[data-test="creator-tool-speech"]').trigger('click')
-    await wrapper.find('[data-test="creator-prompt"]').setValue('卸载后的配音')
-    await wrapper.find('[data-test="creator-submit"]').trigger('submit')
-    wrapper.unmount()
-    pending.resolve({
-      blob: new Blob([new Uint8Array([1])], { type: 'audio/mpeg' }),
-      transcript: '不应展示',
-    })
-    await flushPromises()
-
-    expect(createObjectURL).not.toHaveBeenCalled()
-  })
-
-  it('本地音频历史保存各自 Blob，恢复旧记录不会指向最新音频', async () => {
-    const firstBlob = new Blob([new Uint8Array([1])], { type: 'audio/mpeg' })
-    const secondBlob = new Blob([new Uint8Array([2])], { type: 'audio/mpeg' })
-    synthesizeCreatorSpeech
-      .mockResolvedValueOnce({ blob: firstBlob, transcript: '第一段' })
-      .mockResolvedValueOnce({ blob: secondBlob, transcript: '第二段' })
-    let firstCount = 0
-    const createObjectURL = vi.fn((blob: Blob) => {
-      if (blob === firstBlob) return `blob:first-${++firstCount}`
-      return 'blob:second-1'
-    })
-    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL })
-    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
-    const wrapper = await mountReadyView()
-
-    await wrapper.find('[data-test="creator-tool-speech"]').trigger('click')
-    await wrapper.find('[data-test="creator-prompt"]').setValue('第一段文案')
-    await wrapper.find('[data-test="creator-submit"]').trigger('submit')
-    await flushPromises()
-    await wrapper.find('[data-test="creator-prompt"]').setValue('第二段文案')
-    await wrapper.find('[data-test="creator-submit"]').trigger('submit')
-    await flushPromises()
-    await wrapper.find('[data-test="creator-tool-history"]').trigger('click')
-    const firstRecord = wrapper.findAll('button.history-row').find((item) => item.text().includes('第一段文案'))
-    expect(firstRecord).toBeDefined()
-    await firstRecord!.trigger('click')
-    await flushPromises()
-
-    expect(wrapper.find('audio').attributes('src')).toBe('blob:first-2')
-  })
 })

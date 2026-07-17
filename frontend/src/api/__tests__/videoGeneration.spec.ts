@@ -50,7 +50,8 @@ describe('videoGeneration gateway contract', () => {
         width: 1280,
         height: 720,
         imageUrl: 'https://example.com/first.png',
-        referenceImage: 'https://example.com/reference.png'
+        referenceImage: 'https://example.com/reference.png',
+        creatorTool: 'video'
       })
 
       const [url, payload, config] = gatewayPost.mock.calls[0]
@@ -67,6 +68,7 @@ describe('videoGeneration gateway contract', () => {
       })
       expect(payload).not.toHaveProperty('size')
       expect(config.headers.Authorization).toBe('Bearer sk-test-video')
+      expect(config.headers['X-Creator-Tool']).toBe('video')
     }
   )
 
