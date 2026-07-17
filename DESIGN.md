@@ -2,7 +2,7 @@
 
 ## Source of truth
 - Status: Active
-- Last refreshed: 2026-07-16
+- Last refreshed: 2026-07-17
 - Primary product surfaces: existing 88token Sub2API console, unified online creator, affiliate, Token leaderboard, and recharge custom page.
 - Evidence reviewed: fourteen approved online-creator references under `.omx/artifacts/visual-ralph/online-creator-v158/`; user screenshots for Token leaderboard and affiliate hierarchy; `frontend/src/views/user/BatchImageGuideView.vue`; `frontend/src/views/user/VideoGenerationView.vue`; `frontend/src/views/user/TokenLeaderboardView.vue`; `frontend/src/views/user/AffiliateView.vue`; `frontend/src/components/layout/AppSidebar.vue`; `frontend/src/router/index.ts`; upstream tag `v0.1.158`.
 
@@ -42,7 +42,7 @@
 
 ## Components
 - Existing components to reuse: `AppLayout`, `AppSidebar`, `Icon`, current form controls, `GenerationHistoryPanel`, image/video APIs, batch-image API, status badges, and result actions.
-- New/changed components: `OnlineCreatorView`, internal creator rail, tool home, shared key/model selector, image tool, text tool, batch tool, audio tool, unified result panel, and unified creation history; existing leaderboard and affiliate components remain protected.
+- New/changed components: `OnlineCreatorView`, internal creator rail, tool home, shared key/model selector, image tool, text tool, batch tool, audio tool, unified result panel, unified creation history, and a Token leaderboard share dialog that generates a current-rank poster and canonical route link; existing affiliate behavior remains protected.
 - Variants and states: eleven creator tools plus home/history; realtime leaderboard refreshing every five minutes; settled historical leaderboard; arbitrary positive agent levels with level 1 as the cap; administrator root collapsed to level-1 agents; provider/model-specific media and audio states.
 - Token/component ownership: existing frontend tokens remain authoritative.
 
@@ -62,7 +62,7 @@
 - Loading: leaderboard keeps existing data during silent automatic refresh and shows loading only for explicit switches/refreshes; provider request accepted and polling status visible.
 - Empty: creator result area names the next required action without feature-marketing copy; home/history use compact empty states.
 - Error: show normalized provider error without exposing credentials.
-- Success: render actual text/media/audio response, dimensions/status when available, copy/download/reuse actions, and a persisted creation record where supported.
+- Success: render actual text/media/audio response, dimensions/status when available, copy/download/reuse actions, and a persisted creation record where supported; leaderboard sharing exposes separate poster, link, and combined clipboard actions.
 - Disabled: invalid provider/model parameter combinations cannot submit.
 - Offline/slow network, if applicable: bounded polling with explicit timeout/failure state.
 

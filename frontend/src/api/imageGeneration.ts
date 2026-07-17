@@ -197,6 +197,7 @@ function imageSizeParameters(model: string, requestedSize: string): ImageSizePar
 
   if (/^gpt-image-2(?:$|[-.])/.test(normalizedModel)) {
     return {
+      size: orientationSize(dimensions, '1536x1024', '1024x1536', '1024x1024'),
       aspect_ratio: aspectRatioForDimensions(dimensions),
       resolution: Math.max(dimensions.width, dimensions.height) > 1024 ? '2K' : '1K'
     }
@@ -215,6 +216,180 @@ function imageSizeParameters(model: string, requestedSize: string): ImageSizePar
   }
 
   return { size: requestedSize }
+}
+
+function isGrokImageModel(model: string): boolean {
+  const normalizedModel = model.trim().toLowerCase()
+  return normalizedModel === 'grok-imagine' ||
+    normalizedModel === 'grok-imagine-edit' ||
+    normalizedModel.startsWith('grok-imagine-image')
+}
+
+function imageMimeType(format?: string): string {
+  const normalizedFormat = String(format || '').trim().toLowerCase().replace(/^image\//, '')
+  if (normalizedFormat === 'jpg' || normalizedFormat === 'jpeg') return 'image/jpeg'
+  if (normalizedFormat === 'webp') return 'image/webp'
+  return 'image/png'
+}
+
+function imageFormatFromMimeType(mimeType: string, requestedFormat?: string): string {
+  const normalizedMimeType = mimeType.trim().toLowerCase()
+  if (normalizedMimeType === 'image/jpeg') {
+    return String(requestedFormat || '').trim().toLowerCase() === 'jpg' ? 'jpg' : 'jpeg'
+  }
+  if (normalizedMimeType === 'image/webp') return 'webp'
+  return 'png'
+}
+
+function base64ImageBlob(value: string, mimeType: string): Blob {
+  const dataUrlMatch = /^data:([^;,]+)?(?:;[^,]*)?;base64,(.*)$/is.exec(value.trim())
+  const binary = globalThis.atob((dataUrlMatch?.[2] || value).replace(/\s/g, ''))
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+  return new Blob([bytes], { type: dataUrlMatch?.[1] || mimeType })
+}
+
+async function imageBlobFromItem(item: ImageGenerationItem, signal?: AbortSignal): Promise<Blob | null> {
+  const encodedImage = item.b64_json || item.result
+  if (encodedImage) return base64ImageBlob(encodedImage, imageMimeType(item.output_format))
+  if (!item.url) return null
+
+  if (item.url.startsWith('data:')) return base64ImageBlob(item.url, imageMimeType(item.output_format))
+  const response = await fetch(item.url, { signal })
+  if (!response.ok) throw new Error(`无法读取 Grok 图片结果（HTTP ${response.status}）`)
+  return response.blob()
+}
+
+interface DecodedImage {
+  source: CanvasImageSource
+  width: number
+  height: number
+  dispose: () => void
+}
+
+async function decodeImageBlob(blob: Blob): Promise<DecodedImage> {
+  if (typeof globalThis.createImageBitmap === 'function') {
+    const bitmap = await globalThis.createImageBitmap(blob)
+    return {
+      source: bitmap,
+      width: bitmap.width,
+      height: bitmap.height,
+      dispose: () => bitmap.close()
+    }
+  }
+
+  const objectUrl = URL.createObjectURL(blob)
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const element = new Image()
+      element.onload = () => resolve(element)
+      element.onerror = () => reject(new Error('无法解码 Grok 图片结果'))
+      element.src = objectUrl
+    })
+    return {
+      source: image,
+      width: image.naturalWidth,
+      height: image.naturalHeight,
+      dispose: () => URL.revokeObjectURL(objectUrl)
+    }
+  } catch (error) {
+    URL.revokeObjectURL(objectUrl)
+    throw error
+  }
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement, mimeType: string): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob)
+      else reject(new Error('浏览器无法按目标尺寸导出 Grok 图片'))
+    }, mimeType)
+  })
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || '').split(',', 2)[1] || '')
+    reader.onerror = () => reject(new Error('无法读取调整尺寸后的 Grok 图片'))
+    reader.readAsDataURL(blob)
+  })
+}
+
+async function resizeGrokImageItem(
+  item: ImageGenerationItem,
+  target: ImageDimensions,
+  outputFormat?: string,
+  signal?: AbortSignal
+): Promise<ImageGenerationItem> {
+  const blob = await imageBlobFromItem(item, signal)
+  if (!blob) return item
+  if (signal?.aborted) throw new DOMException('图片请求已取消', 'AbortError')
+
+  const decoded = await decodeImageBlob(blob)
+  try {
+    if (decoded.width === target.width && decoded.height === target.height) {
+      return { ...item, size: `${target.width}x${target.height}` }
+    }
+
+    const canvas = document.createElement('canvas')
+    canvas.width = target.width
+    canvas.height = target.height
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('浏览器无法创建 Grok 图片尺寸处理画布')
+
+    const scale = Math.max(target.width / decoded.width, target.height / decoded.height)
+    const sourceWidth = target.width / scale
+    const sourceHeight = target.height / scale
+    const sourceX = (decoded.width - sourceWidth) / 2
+    const sourceY = (decoded.height - sourceHeight) / 2
+    context.drawImage(
+      decoded.source,
+      sourceX,
+      sourceY,
+      sourceWidth,
+      sourceHeight,
+      0,
+      0,
+      target.width,
+      target.height
+    )
+
+    const requestedFormat = outputFormat || item.output_format
+    const resizedBlob = await canvasToBlob(canvas, imageMimeType(requestedFormat))
+    const resizedBase64 = await blobToBase64(resizedBlob)
+    return {
+      ...item,
+      b64_json: resizedBase64,
+      result: item.result === undefined ? undefined : resizedBase64,
+      output_format: imageFormatFromMimeType(resizedBlob.type, requestedFormat),
+      size: `${target.width}x${target.height}`
+    }
+  } finally {
+    decoded.dispose()
+  }
+}
+
+async function normalizeGrokImageResponse(
+  response: ImageGenerationResponse,
+  request: ImageGenerateRequest
+): Promise<ImageGenerationResponse> {
+  if (!isGrokImageModel(request.model)) return response
+  const target = parseImageDimensions(request.size)
+  if (!target) return response
+
+  const normalizedResponse = { ...response }
+  if (response.data) {
+    normalizedResponse.data = await Promise.all(
+      response.data.map((item) => resizeGrokImageItem(item, target, request.outputFormat, request.signal))
+    )
+  }
+  if (response.output) {
+    normalizedResponse.output = await Promise.all(
+      response.output.map((item) => resizeGrokImageItem(item, target, request.outputFormat, request.signal))
+    )
+  }
+  return normalizedResponse
 }
 
 interface ImageStreamEventPayload extends ImageGenerationItem {
@@ -354,7 +529,7 @@ export async function generateImage(request: ImageGenerateRequest): Promise<Imag
     output_format: request.outputFormat
   })
 
-  return streamImageRequest(
+  const response = await streamImageRequest(
     '/v1/images/generations',
     request.apiKey,
     JSON.stringify(payload),
@@ -362,6 +537,7 @@ export async function generateImage(request: ImageGenerateRequest): Promise<Imag
     request.signal,
     request.creatorTool
   )
+  return normalizeGrokImageResponse(response, request)
 }
 
 export async function editImage(request: ImageEditRequest): Promise<ImageGenerationResponse> {
@@ -381,7 +557,15 @@ export async function editImage(request: ImageEditRequest): Promise<ImageGenerat
   form.append('image', request.image)
   if (request.mask) form.append('mask', request.mask)
 
-  return streamImageRequest('/v1/images/edits', request.apiKey, form, undefined, request.signal, request.creatorTool)
+  const response = await streamImageRequest(
+    '/v1/images/edits',
+    request.apiKey,
+    form,
+    undefined,
+    request.signal,
+    request.creatorTool
+  )
+  return normalizeGrokImageResponse(response, request)
 }
 
 export const imageGenerationAPI = {

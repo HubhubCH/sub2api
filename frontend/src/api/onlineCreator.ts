@@ -1,6 +1,6 @@
 import { buildGatewayUrl } from './client'
 
-export type CreatorTextMode = 'chat' | 'product-copy' | 'translate'
+export type CreatorTextMode = 'chat' | 'product-copy' | 'translate' | 'prompt-optimize'
 
 export interface CreatorKeyLike {
   status?: string
@@ -149,6 +149,7 @@ export function buildCreatorTextMessages(request: Pick<CreatorTextCompletionRequ
     chat: `你是在线创作工作台里的中文创作助手。直接给出可执行结果，避免空泛解释，输出语言为${targetLanguage}。`,
     'product-copy': `你是电商商品文案助手。根据用户素材生成标题、卖点、详情页短文案和适合闲鱼/电商发布的描述，输出语言为${targetLanguage}。`,
     translate: `你是专业翻译助手。保留原意、语气和格式，只输出${targetLanguage}译文。`,
+    'prompt-optimize': `你是专业 AI 创作提示词优化助手。保留用户原始意图，补充主体、环境、构图、镜头、光影、材质、动作与约束中的必要细节；不要改变任务目标，不要解释，不要添加标题，只输出一段可直接提交的${targetLanguage}提示词。`,
   }[request.mode]
 
   return [

@@ -3,8 +3,10 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -16,8 +18,11 @@ import (
 )
 
 type mediaGenerationRecordRepoStub struct {
-	created service.CreateGenerationRecordParams
-	record  *service.GenerationRecord
+	created       service.CreateGenerationRecordParams
+	record        *service.GenerationRecord
+	deleteErr     error
+	deletedUserID int64
+	deletedTaskID string
 }
 
 func (r *mediaGenerationRecordRepoStub) Create(_ context.Context, params service.CreateGenerationRecordParams, _ time.Time, _ int) (*service.GenerationRecord, []string, error) {
@@ -46,6 +51,10 @@ func (r *mediaGenerationRecordRepoStub) GetByUser(context.Context, int64, string
 }
 func (r *mediaGenerationRecordRepoStub) GetByUpstream(context.Context, int64, int64, int64, string, string) (*service.GenerationRecord, error) {
 	return r.record, nil
+}
+func (r *mediaGenerationRecordRepoStub) Delete(_ context.Context, userID int64, taskID string) error {
+	r.deletedUserID, r.deletedTaskID = userID, taskID
+	return r.deleteErr
 }
 func (r *mediaGenerationRecordRepoStub) TaskExists(context.Context, string) (bool, error) {
 	return true, nil
@@ -119,4 +128,70 @@ func TestPersistVideoGenerationKeepsRecoverableBindingFailureSubmitted(t *testin
 	require.Equal(t, "grok", repo.record.Provider)
 	require.Equal(t, "upstream-1", repo.record.UpstreamTaskID)
 	require.Contains(t, repo.record.ErrorMessage, "本地跟踪记录创建失败")
+}
+
+func TestDeleteGenerationRecordDeletesCurrentUsersRecord(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := &mediaGenerationRecordRepoStub{}
+	h := &OpenAIGatewayHandler{generationRecordService: service.NewGenerationRecordService(repo)}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodDelete, "/user/generation-records/gen_owned", nil)
+	c.Params = gin.Params{{Key: "task_id", Value: "gen_owned"}}
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 7})
+
+	h.DeleteGenerationRecord(c)
+
+	require.Equal(t, http.StatusNoContent, c.Writer.Status())
+	require.Equal(t, int64(7), repo.deletedUserID)
+	require.Equal(t, "gen_owned", repo.deletedTaskID)
+}
+
+func TestDeleteGenerationRecordReturnsNotFound(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := &mediaGenerationRecordRepoStub{deleteErr: os.ErrNotExist}
+	h := &OpenAIGatewayHandler{generationRecordService: service.NewGenerationRecordService(repo)}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodDelete, "/user/generation-records/gen_missing", nil)
+	c.Params = gin.Params{{Key: "task_id", Value: "gen_missing"}}
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 7})
+
+	h.DeleteGenerationRecord(c)
+
+	require.Equal(t, http.StatusNotFound, recorder.Code)
+	require.JSONEq(t, `{"error":"生成记录不存在"}`, recorder.Body.String())
+}
+
+func TestDeleteGenerationRecordRequiresLogin(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := &mediaGenerationRecordRepoStub{}
+	h := &OpenAIGatewayHandler{generationRecordService: service.NewGenerationRecordService(repo)}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodDelete, "/user/generation-records/gen_owned", nil)
+	c.Params = gin.Params{{Key: "task_id", Value: "gen_owned"}}
+
+	h.DeleteGenerationRecord(c)
+
+	require.Equal(t, http.StatusUnauthorized, recorder.Code)
+	require.JSONEq(t, `{"error":"未登录"}`, recorder.Body.String())
+	require.Zero(t, repo.deletedUserID)
+	require.Empty(t, repo.deletedTaskID)
+}
+
+func TestDeleteGenerationRecordReturnsInternalServerError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := &mediaGenerationRecordRepoStub{deleteErr: errors.New("数据库删除失败")}
+	h := &OpenAIGatewayHandler{generationRecordService: service.NewGenerationRecordService(repo)}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodDelete, "/user/generation-records/gen_failed", nil)
+	c.Params = gin.Params{{Key: "task_id", Value: "gen_failed"}}
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 7})
+
+	h.DeleteGenerationRecord(c)
+
+	require.Equal(t, http.StatusInternalServerError, recorder.Code)
+	require.JSONEq(t, `{"error":"删除生成记录失败"}`, recorder.Body.String())
 }

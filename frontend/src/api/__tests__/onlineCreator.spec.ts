@@ -45,6 +45,16 @@ describe('onlineCreatorAPI', () => {
     })
   })
 
+  it('按提示词优化模式只要求返回可直接提交的提示词', () => {
+    const messages = buildCreatorTextMessages({
+      mode: 'prompt-optimize',
+      prompt: '更换背景',
+      targetLanguage: '中文',
+    })
+    expect(messages[0].content).toContain('只输出一段可直接提交的中文提示词')
+    expect(messages[1]).toEqual({ role: 'user', content: '更换背景' })
+  })
+
   it('通过 OpenAI 兼容文本接口提交非流式请求并解析结果', async () => {
     fetchMock.mockResolvedValue({
       ok: true,

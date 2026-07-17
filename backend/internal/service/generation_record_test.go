@@ -18,6 +18,9 @@ import (
 type generationRecordRepoStub struct {
 	record                *GenerationRecord
 	createErr             error
+	deleteErr             error
+	deletedUserID         int64
+	deletedTaskID         string
 	cleanupIDs            []string
 	cleanupUser           int64
 	cleanupLimit          int
@@ -57,6 +60,10 @@ func (r *generationRecordRepoStub) GetByUser(context.Context, int64, string) (*G
 }
 func (r *generationRecordRepoStub) GetByUpstream(context.Context, int64, int64, int64, string, string) (*GenerationRecord, error) {
 	return r.record, nil
+}
+func (r *generationRecordRepoStub) Delete(_ context.Context, userID int64, taskID string) error {
+	r.deletedUserID, r.deletedTaskID = userID, taskID
+	return r.deleteErr
 }
 func (r *generationRecordRepoStub) TaskExists(ctx context.Context, taskID string) (bool, error) {
 	if r.taskExistsFunc != nil {
@@ -316,6 +323,54 @@ func TestGenerationRecordServiceKeepsTenItemsForThreeDays(t *testing.T) {
 	require.Equal(t, now.Add(-GenerationRecordRetention), repo.cleanupCutoff)
 	_, err = os.Stat(filepath.Join(svc.dataDir, "expired"))
 	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestGenerationRecordServiceDeleteRemovesStoredMedia(t *testing.T) {
+	repo := &generationRecordRepoStub{}
+	svc := NewGenerationRecordService(repo)
+	svc.dataDir = t.TempDir()
+	taskDir := filepath.Join(svc.dataDir, "gen_delete")
+	require.NoError(t, os.MkdirAll(taskDir, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(taskDir, "0.png"), []byte("image"), 0o640))
+
+	err := svc.Delete(context.Background(), 7, "gen_delete")
+
+	require.NoError(t, err)
+	require.Equal(t, int64(7), repo.deletedUserID)
+	require.Equal(t, "gen_delete", repo.deletedTaskID)
+	_, statErr := os.Stat(taskDir)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
+func TestGenerationRecordServiceDeleteKeepsMediaWhenDatabaseDeleteFails(t *testing.T) {
+	repo := &generationRecordRepoStub{deleteErr: errors.New("数据库删除失败")}
+	svc := NewGenerationRecordService(repo)
+	svc.dataDir = t.TempDir()
+	taskDir := filepath.Join(svc.dataDir, "gen_delete")
+	require.NoError(t, os.MkdirAll(taskDir, 0o750))
+
+	err := svc.Delete(context.Background(), 7, "gen_delete")
+
+	require.ErrorContains(t, err, "数据库删除失败")
+	_, statErr := os.Stat(taskDir)
+	require.NoError(t, statErr)
+}
+
+func TestGenerationRecordServiceDeleteRejectsUnsafeTaskID(t *testing.T) {
+	repo := &generationRecordRepoStub{}
+	svc := NewGenerationRecordService(repo)
+	svc.dataDir = filepath.Join(t.TempDir(), "generation-records")
+	parentMarker := filepath.Join(filepath.Dir(svc.dataDir), "marker.txt")
+	require.NoError(t, os.MkdirAll(svc.dataDir, 0o750))
+	require.NoError(t, os.WriteFile(parentMarker, []byte("保留"), 0o640))
+
+	err := svc.Delete(context.Background(), 7, "..")
+
+	require.ErrorIs(t, err, os.ErrNotExist)
+	require.Zero(t, repo.deletedUserID)
+	require.Empty(t, repo.deletedTaskID)
+	_, statErr := os.Stat(parentMarker)
+	require.NoError(t, statErr)
 }
 
 func TestGenerationRecordServiceRemovesOrphanDirectories(t *testing.T) {

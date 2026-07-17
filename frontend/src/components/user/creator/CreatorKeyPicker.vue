@@ -1,7 +1,7 @@
 <template>
-  <section class="creator-key-picker" data-test="creator-key">
+  <section class="creator-key-picker" :data-test="testId || 'creator-key'">
     <div class="picker-heading">
-      <strong>API 密钥</strong>
+      <strong>{{ label || 'API 密钥' }}</strong>
       <span>{{ keys.length }} 个可用</span>
     </div>
     <select
@@ -10,7 +10,7 @@
       class="field-control"
       @change="$emit('update:modelValue', ($event.target as HTMLSelectElement).value)"
     >
-      <option value="">请选择 API 密钥</option>
+      <option value="">{{ emptyLabel || '请选择 API 密钥' }}</option>
       <option v-for="key in keys" :key="key.id" :value="String(key.id)">
         {{ key.name }} · {{ maskKey(key.key) }}
       </option>
@@ -25,6 +25,9 @@ defineProps<{
   keys: ApiKey[]
   modelValue: string
   disabled?: boolean
+  label?: string
+  emptyLabel?: string
+  testId?: string
 }>()
 
 defineEmits<{

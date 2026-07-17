@@ -27,4 +27,12 @@ export async function getGenerationRecordContent(taskId: string, index = 0): Pro
   return response.data as Blob
 }
 
-export const generationRecordsAPI = { list: listGenerationRecords, content: getGenerationRecordContent }
+export async function deleteGenerationRecord(taskId: string): Promise<void> {
+  await apiClient.delete(`/user/generation-records/${encodeURIComponent(taskId)}`)
+}
+
+export const generationRecordsAPI = {
+  list: listGenerationRecords,
+  content: getGenerationRecordContent,
+  delete: deleteGenerationRecord
+}

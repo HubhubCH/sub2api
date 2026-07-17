@@ -69,6 +69,16 @@
             <p class="record-prompt">{{ record.prompt_preview || '未保存提示词' }}</p>
             <p v-if="record.error_message" class="record-error">{{ record.error_message }}</p>
           </button>
+          <button
+            type="button"
+            class="delete-record-button"
+            :aria-label="`删除${record.prompt_preview || '生成记录'}`"
+            title="删除记录"
+            data-test="creator-delete-backend-record"
+            @click.stop="$emit('deleteBackend', record)"
+          >
+            <Icon name="trash" size="sm" />
+          </button>
         </article>
       </div>
     </section>
@@ -77,30 +87,40 @@
       <div class="section-heading">
         <div>
           <h2 id="local-history-title">本地文案记录</h2>
-          <p>本次打开页面生成的文案</p>
+          <p>最多 10 条，每条保留 3 天</p>
         </div>
         <span>{{ visibleLocalRecords.length }} 条</span>
       </div>
 
       <div v-if="visibleLocalRecords.length === 0" class="empty-row">暂无本地文案记录</div>
       <div v-else class="history-grid local-grid">
-        <button
+        <article
           v-for="record in visibleLocalRecords"
           :key="record.id"
-          type="button"
           class="history-card local-card"
-          @click="$emit('restoreLocal', record)"
         >
-          <div class="record-heading">
-            <strong>{{ record.title }}</strong>
-            <span class="status-badge status-completed">本地保存</span>
-          </div>
-          <div class="record-meta">
-            <span>{{ record.kind || '文本' }}</span>
-            <time :datetime="record.createdAt">{{ formatLocalTime(record) }}</time>
-          </div>
-          <p class="record-prompt">{{ record.preview || record.content || '暂无内容预览' }}</p>
-        </button>
+          <button type="button" class="history-card-action" @click="$emit('restoreLocal', record)">
+            <div class="record-heading">
+              <strong>{{ record.title }}</strong>
+              <span class="status-badge status-completed">本地保存</span>
+            </div>
+            <div class="record-meta">
+              <span>{{ record.kind || '文本' }}</span>
+              <time :datetime="record.createdAt">{{ formatLocalTime(record) }}</time>
+            </div>
+            <p class="record-prompt">{{ record.preview || record.content || '暂无内容预览' }}</p>
+          </button>
+          <button
+            type="button"
+            class="delete-record-button"
+            :aria-label="`删除${record.title || '本地文案记录'}`"
+            title="删除记录"
+            data-test="creator-delete-local-record"
+            @click.stop="$emit('deleteLocal', record)"
+          >
+            <Icon name="trash" size="sm" />
+          </button>
+        </article>
       </div>
     </section>
 
@@ -116,6 +136,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { generationRecordsAPI, type GenerationRecord } from '@/api/generationRecords'
+import Icon from '@/components/icons/Icon.vue'
 import CreatorImagePreviewDialog from './CreatorImagePreviewDialog.vue'
 
 export interface CreatorLocalRecord {
@@ -137,6 +158,8 @@ const props = defineProps<{
 defineEmits<{
   restoreBackend: [record: GenerationRecord]
   restoreLocal: [record: CreatorLocalRecord]
+  deleteBackend: [record: GenerationRecord]
+  deleteLocal: [record: CreatorLocalRecord]
 }>()
 
 const visibleBackendRecords = computed(() => props.backendRecords.slice(0, 10))
@@ -380,6 +403,7 @@ function formatLocalTime(record: CreatorLocalRecord): string {
 }
 
 .history-card {
+  position: relative;
   display: flex;
   min-width: 0;
   overflow: hidden;
@@ -388,6 +412,29 @@ function formatLocalTime(record: CreatorLocalRecord): string {
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.94);
   color: inherit;
+}
+
+.delete-record-button {
+  position: absolute;
+  z-index: 2;
+  right: 8px;
+  bottom: 8px;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #dc2626;
+  cursor: pointer;
+}
+
+.delete-record-button:hover,
+.delete-record-button:focus-visible {
+  border-color: #ef4444;
+  background: #fef2f2;
+  outline: none;
 }
 
 .history-card:hover,
@@ -544,7 +591,7 @@ function formatLocalTime(record: CreatorLocalRecord): string {
 .record-error {
   display: -webkit-box;
   overflow: hidden;
-  margin: 9px 12px 12px;
+  margin: 9px 48px 12px 12px;
   -webkit-box-orient: vertical;
   color: #64748b;
   font-size: 12px;
@@ -596,6 +643,12 @@ function formatLocalTime(record: CreatorLocalRecord): string {
 :global(.dark) .history-card:hover {
   border-color: #3b827b;
   background: #172033;
+}
+
+:global(.dark) .delete-record-button {
+  border-color: #7f1d1d;
+  background: rgba(15, 23, 42, 0.94);
+  color: #fca5a5;
 }
 
 :global(.dark) .record-preview {

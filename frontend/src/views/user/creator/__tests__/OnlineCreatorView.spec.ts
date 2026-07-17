@@ -19,9 +19,11 @@ const getBatchImageJob = vi.hoisted(() => vi.fn())
 const listBatchImageItems = vi.hoisted(() => vi.fn())
 const getBatchImageItemContent = vi.hoisted(() => vi.fn())
 const downloadBatchImageZip = vi.hoisted(() => vi.fn())
+const deleteBatchImageJobRecord = vi.hoisted(() => vi.fn())
 const saveBlob = vi.hoisted(() => vi.fn())
 const listRecords = vi.hoisted(() => vi.fn())
 const getRecordContent = vi.hoisted(() => vi.fn())
+const deleteGenerationRecord = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api', () => ({
   keysAPI: {
@@ -73,6 +75,7 @@ vi.mock('@/api/batchImage', () => ({
   listBatchImageItems,
   getBatchImageItemContent,
   downloadBatchImageZip,
+  deleteBatchImageJobRecord,
   saveBlob,
 }))
 
@@ -80,10 +83,21 @@ vi.mock('@/api/generationRecords', () => ({
   generationRecordsAPI: {
     list: listRecords,
     content: getRecordContent,
+    delete: deleteGenerationRecord,
   },
 }))
 
 import OnlineCreatorView from '../OnlineCreatorView.vue'
+import {
+  creatorBatchAPIKeys,
+  creatorBatchPollTimers,
+  creatorBatchRecordContexts,
+  creatorTaskStates,
+  creatorVideoPollTimers,
+  creatorVideoTasks,
+  estimateCreatorDuration,
+  recordCreatorDuration,
+} from '@/composables/useCreatorRuntime'
 
 async function mountReadyView(initialTool?: string) {
   const wrapper = mount(OnlineCreatorView, {
@@ -145,7 +159,14 @@ function batchJob(overrides: Record<string, unknown> = {}) {
 
 function installCanvasImageMocks() {
   const drawImage = vi.fn()
-  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage, clearRect: vi.fn() } as never)
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+    drawImage,
+    clearRect: vi.fn(),
+    fillRect: vi.fn(),
+    imageSmoothingEnabled: true,
+    imageSmoothingQuality: 'high',
+    fillStyle: '#000000',
+  } as never)
   vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (callback) {
     callback(new Blob([new Uint8Array([7, 8, 9])], { type: 'image/png' }))
   })
@@ -160,11 +181,37 @@ function installCanvasImageMocks() {
       queueMicrotask(() => this.onload?.())
     }
   })
+  vi.stubGlobal('createImageBitmap', vi.fn().mockResolvedValue({ width: 100, height: 100, close: vi.fn() }))
   return drawImage
+}
+
+function resetCreatorRuntime() {
+  for (const timer of creatorVideoPollTimers.values()) window.clearTimeout(timer)
+  for (const timer of creatorBatchPollTimers.values()) window.clearTimeout(timer)
+  creatorVideoPollTimers.clear()
+  creatorBatchPollTimers.clear()
+  creatorBatchAPIKeys.clear()
+  creatorBatchRecordContexts.clear()
+  creatorVideoTasks.clear()
+  for (const state of Object.values(creatorTaskStates)) {
+    state.controller?.abort()
+    state.output = null
+    state.loading = false
+    state.running = false
+    state.status = ''
+    state.error = ''
+    state.version = 0
+    state.controller = null
+    state.startedAt = 0
+    state.estimateSeconds = 0
+    state.timingKey = ''
+  }
 }
 
 describe('OnlineCreatorView', () => {
   beforeEach(() => {
+    resetCreatorRuntime()
+    localStorage.clear()
     listKeys.mockReset()
     getUserGroupRates.mockReset()
     listTextModels.mockReset()
@@ -183,9 +230,11 @@ describe('OnlineCreatorView', () => {
     listBatchImageItems.mockReset()
     getBatchImageItemContent.mockReset()
     downloadBatchImageZip.mockReset()
+    deleteBatchImageJobRecord.mockReset()
     saveBlob.mockReset()
     listRecords.mockReset()
     getRecordContent.mockReset()
+    deleteGenerationRecord.mockReset()
     Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn((file: File) => `blob:${file.name || 'preview'}`) })
     Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
 
@@ -202,6 +251,8 @@ describe('OnlineCreatorView', () => {
     listVideoModels.mockResolvedValue(['grok-imagine-video'])
     listBatchImageModels.mockResolvedValue({ data: [{ id: 'gemini-2.5-flash-image', provider: 'gemini_api' }] })
     listBatchImageJobs.mockResolvedValue({ object: 'list', data: [], has_more: false })
+    deleteBatchImageJobRecord.mockResolvedValue(undefined)
+    deleteGenerationRecord.mockResolvedValue(undefined)
     listRecords.mockResolvedValue([
       {
         task_id: 'record-image-1',
@@ -219,6 +270,7 @@ describe('OnlineCreatorView', () => {
   })
 
   afterEach(() => {
+    resetCreatorRuntime()
     vi.useRealTimers()
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
@@ -251,6 +303,15 @@ describe('OnlineCreatorView', () => {
 
     expect(wrapper.find('[data-test="creator-tool-video"]').classes()).toContain('active')
     expect(wrapper.find('[data-test="creator-tool-home"]').classes()).not.toContain('active')
+  })
+
+  it('预计等待时间使用当前用户同工具同模型最近生成耗时均值', () => {
+    localStorage.setItem('auth_user', JSON.stringify({ id: 7 }))
+    recordCreatorDuration('image', 'gpt-image-1', 10_000)
+    recordCreatorDuration('image', 'gpt-image-1', 20_000)
+
+    expect(estimateCreatorDuration('image', 'gpt-image-1')).toBe(15)
+    expect(estimateCreatorDuration('video', 'gpt-image-1')).toBe(180)
   })
 
   it('各工具页只显示本工具记录，首页和历史页合并显示', async () => {
@@ -381,6 +442,130 @@ describe('OnlineCreatorView', () => {
     expect(wrapper.text()).toContain('闲鱼商品文案')
   })
 
+  it('备用文本密钥只用于文案与提示词优化，图片仍使用主密钥', async () => {
+    listKeys.mockResolvedValue({
+      items: [
+        { id: 1, name: '图片密钥', key: 'sk-image-only', status: 'active', quota: 0, quota_used: 0, expires_at: null },
+        { id: 2, name: '文本密钥', key: 'sk-text-only', status: 'active', quota: 0, quota_used: 0, expires_at: null },
+      ],
+    })
+    listTextModels.mockImplementation(async (apiKey: string) => apiKey === 'sk-text-only' ? ['gpt-4o-mini'] : [])
+    createTextCompletion.mockResolvedValue({ content: '备用密钥生成的文案' })
+    generateImage.mockResolvedValue({ data: [{ b64_json: 'aW1hZ2U=' }] })
+    const wrapper = await mountReadyView('product-copy')
+
+    await wrapper.find('[data-test="creator-backup-key"] select').setValue('2')
+    await flushPromises()
+    await wrapper.find('input.field-control').setValue('咖啡机')
+    await wrapper.find('textarea.field-control').setValue('九成新')
+    await wrapper.find('[data-test="creator-submit"]').trigger('submit')
+    await flushPromises()
+
+    expect(createTextCompletion.mock.calls[0][0]).toMatchObject({ apiKey: 'sk-text-only', model: 'gpt-4o-mini' })
+
+    await wrapper.find('[data-test="creator-tool-image"]').trigger('click')
+    await wrapper.find('[data-test="creator-prompt"]').setValue('白底咖啡机')
+    await wrapper.find('[data-test="creator-submit"]').trigger('submit')
+    await flushPromises()
+    expect(generateImage.mock.calls[0][0].apiKey).toBe('sk-image-only')
+  })
+
+  it('提示词优化不会覆盖请求期间的手动修改且各工具输入隔离', async () => {
+    const optimization = deferred<{ content: string }>()
+    createTextCompletion.mockReturnValue(optimization.promise)
+    const wrapper = await mountReadyView('image')
+
+    await wrapper.find('[data-test="creator-prompt"]').setValue('原始图片提示词')
+    await wrapper.find('[data-test="creator-optimize-prompt"]').trigger('click')
+    await wrapper.find('[data-test="creator-prompt"]').setValue('我手动修改后的提示词')
+    optimization.resolve({ content: '异步返回的优化提示词' })
+    await flushPromises()
+
+    expect((wrapper.find('[data-test="creator-prompt"]').element as HTMLTextAreaElement).value).toBe('我手动修改后的提示词')
+    expect(wrapper.text()).toContain('本次优化结果未自动覆盖')
+    expect(createTextCompletion.mock.calls[0][0]).toMatchObject({ mode: 'prompt-optimize', apiKey: 'sk-live' })
+
+    await wrapper.find('[data-test="creator-tool-edit"]').trigger('click')
+    expect((wrapper.find('[data-test="creator-prompt"]').element as HTMLTextAreaElement).value).toBe('')
+    await wrapper.find('[data-test="creator-tool-image"]').trigger('click')
+    expect((wrapper.find('[data-test="creator-prompt"]').element as HTMLTextAreaElement).value).toBe('我手动修改后的提示词')
+  })
+
+  it('本地文案按用户清理三天前记录、限制十条并支持手动删除', async () => {
+    const now = Date.now()
+    localStorage.setItem('auth_user', JSON.stringify({ id: 99 }))
+    const records = [
+      ...Array.from({ length: 11 }, (_, index) => ({
+        id: `local-valid-${index}`,
+        toolId: 'product-copy',
+        title: `文案 ${index}`,
+        kind: '商品文案',
+        preview: `预览 ${index}`,
+        content: `内容 ${index}`,
+        outputType: 'text',
+        createdAt: new Date(now - index * 1000).toISOString(),
+      })),
+      {
+        id: 'local-expired',
+        toolId: 'product-copy',
+        title: '过期文案',
+        kind: '商品文案',
+        preview: '过期',
+        content: '过期',
+        outputType: 'text',
+        createdAt: new Date(now - 73 * 60 * 60 * 1000).toISOString(),
+      },
+    ]
+    localStorage.setItem('online-creator-local-copy-v1:99', JSON.stringify(records))
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const wrapper = await mountReadyView('history')
+
+    expect(wrapper.findAll('[data-test="creator-delete-local-record"]')).toHaveLength(10)
+    expect(wrapper.text()).not.toContain('过期文案')
+    await wrapper.find('[data-test="creator-delete-local-record"]').trigger('click')
+
+    const stored = JSON.parse(localStorage.getItem('online-creator-local-copy-v1:99') || '[]')
+    expect(stored).toHaveLength(9)
+  })
+
+  it('生成记录支持确认后手动删除', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const wrapper = await mountReadyView('history')
+
+    await wrapper.find('[data-test="creator-delete-backend-record"]').trigger('click')
+    await flushPromises()
+
+    expect(deleteGenerationRecord).toHaveBeenCalledWith('record-image-1')
+    expect(wrapper.text()).not.toContain('最近的主图')
+  })
+
+  it('记录达到十条时提交前提醒用户', async () => {
+    listRecords.mockResolvedValue(Array.from({ length: 10 }, (_, index) => ({
+      task_id: `record-${index}`,
+      api_key_id: 1,
+      media_type: 'image',
+      creator_tool: 'image',
+      provider: 'openai',
+      model: 'gpt-image-1',
+      prompt_preview: `记录 ${index}`,
+      status: 'completed',
+      result: null,
+      created_at: new Date(Date.now() - index * 1000).toISOString(),
+    })))
+    generateImage.mockResolvedValue({ data: [{ b64_json: 'aW1hZ2U=' }] })
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
+    const wrapper = await mountReadyView('image')
+
+    await wrapper.find('[data-test="creator-prompt"]').setValue('满记录测试')
+    await wrapper.find('[data-test="creator-submit"]').trigger('submit')
+    expect(generateImage).not.toHaveBeenCalled()
+    await wrapper.find('[data-test="creator-submit"]').trigger('submit')
+    await flushPromises()
+
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('删除时间最早的一条记录'))
+    expect(generateImage).toHaveBeenCalledTimes(1)
+  })
+
   it('按图片工具提交真实图片生成载荷', async () => {
     generateImage.mockResolvedValue({
       data: [{ b64_json: 'aW1hZ2U=', revised_prompt: '修订提示词' }],
@@ -435,7 +620,7 @@ describe('OnlineCreatorView', () => {
     expect(wrapper.text()).toContain('当前分组：生图分组')
     expect(wrapper.find('[data-test="creator-image-cost"]').text()).toContain('约 $0.3000')
     await wrapper.find('[data-test="creator-image-scene-product"]').trigger('click')
-    await wrapper.find('[data-test="creator-image-size"]').setValue('1536x1024')
+    await wrapper.find('[data-test="creator-ratio-3-2"]').trigger('click')
     await wrapper.find('[data-test="creator-image-quality"]').setValue('medium')
     await wrapper.find('[data-test="creator-image-style"]').setValue('vivid')
     await wrapper.find('[data-test="creator-image-background"]').setValue('transparent')
@@ -467,7 +652,7 @@ describe('OnlineCreatorView', () => {
     expect(wrapper.find('[data-test="creator-image-cost"]').text()).toContain('约 $0.0500')
     expect(wrapper.find('[data-test="creator-image-quality"]').attributes('disabled')).toBeDefined()
     expect(wrapper.find('[data-test="creator-image-background"]').attributes('disabled')).toBeDefined()
-    await wrapper.find('[data-test="creator-image-size"]').setValue('1536x1024')
+    await wrapper.find('[data-test="creator-ratio-3-2"]').trigger('click')
     expect(wrapper.find('[data-test="creator-image-cost"]').text()).toContain('约 $0.0700')
   })
 
@@ -487,10 +672,11 @@ describe('OnlineCreatorView', () => {
     expect(editImage.mock.calls[0][0]).toMatchObject({
       apiKey: 'sk-live',
       model: 'gpt-image-1',
-      size: '1536x1024',
+      size: '208x112',
       creatorTool: 'outpaint',
     })
     expect(editImage.mock.calls[0][0].image.name).toBe('outpaint-source.png')
+    expect(editImage.mock.calls[0][0].mask.name).toBe('outpaint-mask.png')
     expect(editImage.mock.calls[0][0].prompt).toContain('仅自然补全透明扩展区域')
     expect(editImage.mock.calls[0][0].prompt).toContain('扩图方向：向右')
   })
@@ -540,6 +726,44 @@ describe('OnlineCreatorView', () => {
     await flushPromises()
     await setInputFiles(wrapper, '#creator-batch-files', files)
     expect(wrapper.text()).toContain('已选择 6 / 6 张')
+  })
+
+  it('批量任务按所选画布同步提交比例和清晰度档位', async () => {
+    submitBatchImageJob.mockResolvedValue({ id: 'batch-wide', status: 'queued', item_count: 1 })
+    const wrapper = await mountReadyView('batch-main')
+    const product = new File([new Uint8Array([1])], 'wide.png', { type: 'image/png' })
+
+    await wrapper.find('[data-test="creator-ratio-16-9"]').trigger('click')
+    await setInputFiles(wrapper, '#creator-batch-files', [product])
+    await vi.waitFor(() => expect(wrapper.find('[data-test="creator-submit-button"]').attributes('disabled')).toBeUndefined())
+    await wrapper.find('[data-test="creator-submit"]').trigger('submit')
+    await vi.waitFor(() => expect(submitBatchImageJob).toHaveBeenCalledTimes(1))
+
+    expect(submitBatchImageJob.mock.calls[0][1]).toMatchObject({ aspect_ratio: '16:9', image_size: '2K' })
+  })
+
+  it('批量任务在记录满十条后提交成功会删除最早记录', async () => {
+    listRecords.mockResolvedValue(Array.from({ length: 10 }, (_, index) => ({
+      task_id: `full-record-${index}`,
+      api_key_id: 1,
+      media_type: 'image',
+      creator_tool: 'image',
+      provider: 'openai',
+      model: 'gpt-image-1',
+      prompt_preview: `满额记录 ${index}`,
+      status: 'completed',
+      result: null,
+      created_at: new Date(Date.now() - index * 1000).toISOString(),
+    })))
+    submitBatchImageJob.mockResolvedValue({ id: 'batch-replace-oldest', status: 'queued', item_count: 1 })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const wrapper = await mountReadyView('batch-main')
+    const product = new File([new Uint8Array([1])], 'replace.png', { type: 'image/png' })
+
+    await setInputFiles(wrapper, '#creator-batch-files', [product])
+    await vi.waitFor(() => expect(wrapper.find('[data-test="creator-submit-button"]').attributes('disabled')).toBeUndefined())
+    await wrapper.find('[data-test="creator-submit"]').trigger('submit')
+    await vi.waitFor(() => expect(deleteGenerationRecord).toHaveBeenCalledWith('full-record-9'))
   })
 
   it('批量克隆提供参考图和商品图入口', async () => {
@@ -648,7 +872,7 @@ describe('OnlineCreatorView', () => {
     wrapper.unmount()
   })
 
-  it('批量图片仍在 base64 预处理时卸载不会提交收费任务', async () => {
+  it('批量图片在 base64 预处理时离开页面仍会继续提交', async () => {
     const pendingBuffer = deferred<ArrayBuffer>()
     submitBatchImageJob.mockResolvedValue({ id: 'batch-stale-preprocess', status: 'queued', item_count: 1 })
     const wrapper = await mountReadyView()
@@ -663,11 +887,11 @@ describe('OnlineCreatorView', () => {
     pendingBuffer.resolve(new Uint8Array([1]).buffer)
     await flushPromises()
 
-    expect(submitBatchImageJob).not.toHaveBeenCalled()
+    expect(submitBatchImageJob).toHaveBeenCalledTimes(1)
     expect(editImage).not.toHaveBeenCalled()
   })
 
-  it('批量提交返回 unsupported 前卸载不会继续逐张收费兜底', async () => {
+  it('批量提交返回 unsupported 前离开页面仍会继续逐张兜底', async () => {
     installCanvasImageMocks()
     Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:stale-clone') })
     Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
@@ -688,7 +912,7 @@ describe('OnlineCreatorView', () => {
     pendingSubmit.reject(Object.assign(new Error('reference_images is not supported'), { status: 422 }))
     await flushPromises()
 
-    expect(editImage).not.toHaveBeenCalled()
+    expect(editImage).toHaveBeenCalledTimes(1)
   })
 
   it('去除水印走图片编辑，添加水印走 Canvas', async () => {
@@ -756,6 +980,24 @@ describe('OnlineCreatorView', () => {
 
     await wrapper.find('[data-test="creator-tool-product-copy"]').trigger('click')
     expect(wrapper.find('.text-output').text()).toContain('完成')
+  })
+
+  it('切换账号时清除上一账号的共享结果和密钥任务上下文', async () => {
+    localStorage.setItem('auth_user', JSON.stringify({ id: 101 }))
+    generateImage.mockResolvedValue({ data: [{ b64_json: 'YWNjb3VudC0x' }] })
+    const firstWrapper = await mountReadyView('image')
+
+    await firstWrapper.find('[data-test="creator-prompt"]').setValue('账号一结果')
+    await firstWrapper.find('[data-test="creator-submit"]').trigger('submit')
+    await flushPromises()
+    expect(firstWrapper.find('img[alt="创作结果"]').exists()).toBe(true)
+    firstWrapper.unmount()
+
+    localStorage.setItem('auth_user', JSON.stringify({ id: 202 }))
+    const secondWrapper = await mountReadyView('image')
+    expect(secondWrapper.find('img[alt="创作结果"]').exists()).toBe(false)
+    expect(creatorVideoTasks.size).toBe(0)
+    expect(creatorBatchAPIKeys.size).toBe(0)
   })
 
   it('按 Agnes 模型推断供应商并轮询视频结果到可播放下载状态', async () => {
@@ -892,7 +1134,7 @@ describe('OnlineCreatorView', () => {
     await wrapper.find('[data-test="creator-prompt"]').setValue('允许瞬时错误重试')
     await wrapper.find('[data-test="creator-submit"]').trigger('submit')
     await flushPromises()
-    await vi.runAllTimersAsync()
+    await vi.advanceTimersByTimeAsync(10000)
     await flushPromises()
 
     expect(getVideoStatus).toHaveBeenCalledTimes(2)
@@ -902,7 +1144,7 @@ describe('OnlineCreatorView', () => {
     wrapper.unmount()
   })
 
-  it('切换工具后继续视频轮询，卸载时停止', async () => {
+  it('切换工具和离开页面后仍继续视频轮询', async () => {
     vi.useFakeTimers()
     generateVideo.mockResolvedValue({ request_id: 'video-pending', status: 'queued' })
     getVideoStatus.mockResolvedValue({ request_id: 'video-pending', status: 'processing' })
@@ -919,10 +1161,44 @@ describe('OnlineCreatorView', () => {
 
     wrapper.unmount()
     await vi.advanceTimersByTimeAsync(5000)
-    expect(getVideoStatus).toHaveBeenCalledTimes(1)
+    expect(getVideoStatus).toHaveBeenCalledTimes(2)
   })
 
-  it('从 files 记录读取 Blob，切换工具保留预览并在卸载时释放 URL', async () => {
+  it('后台任务完成后会刷新重新进入页面的历史记录', async () => {
+    vi.useFakeTimers()
+    let completed = false
+    listRecords.mockImplementation(async () => completed ? [{
+      task_id: 'video-remount',
+      api_key_id: 1,
+      media_type: 'video',
+      creator_tool: 'video',
+      provider: 'grok',
+      model: 'grok-imagine-video',
+      prompt_preview: '重新进入后可见的视频',
+      status: 'completed',
+      result: { urls: ['https://cdn.example/remount.mp4'] },
+      created_at: new Date().toISOString(),
+    }] : [])
+    generateVideo.mockResolvedValue({ request_id: 'video-remount', status: 'queued' })
+    getVideoStatus.mockImplementation(async () => {
+      completed = true
+      return { request_id: 'video-remount', status: 'completed', video: { url: 'https://cdn.example/remount.mp4' } }
+    })
+    const firstWrapper = await mountReadyView('video')
+    await firstWrapper.find('[data-test="creator-prompt"]').setValue('后台完成测试')
+    await firstWrapper.find('[data-test="creator-submit"]').trigger('submit')
+    await flushPromises()
+    firstWrapper.unmount()
+
+    const secondWrapper = await mountReadyView('history')
+    expect(secondWrapper.text()).not.toContain('重新进入后可见的视频')
+    await vi.advanceTimersByTimeAsync(5000)
+    await flushPromises()
+
+    expect(secondWrapper.text()).toContain('重新进入后可见的视频')
+  })
+
+  it('从 files 记录读取 Blob，切换工具和离开页面后保留预览 URL', async () => {
     const createObjectURL = vi.fn(() => 'blob:history-image')
     const revokeObjectURL = vi.fn()
     Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL })
@@ -941,7 +1217,7 @@ describe('OnlineCreatorView', () => {
     await wrapper.find('[data-test="creator-tool-image"]').trigger('click')
     expect(revokeObjectURL).not.toHaveBeenCalledWith('blob:history-image')
     wrapper.unmount()
-    expect(revokeObjectURL).toHaveBeenCalledWith('blob:history-image')
+    expect(revokeObjectURL).not.toHaveBeenCalledWith('blob:history-image')
   })
 
   it('恢复记录失败前切换工具时不写入旧请求错误', async () => {

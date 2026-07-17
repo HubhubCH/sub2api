@@ -47,6 +47,10 @@
               <span>{{ t('tokenLeaderboard.statDate') }}</span>
               <input v-model="selectedDate" type="date" :min="minDate" :max="maxDate" @change="loadData()" />
             </label>
+            <button class="btn btn-secondary" :disabled="!data" @click="shareDialogOpen = true">
+              <Icon name="link" size="sm" />
+              <span>{{ t('tokenLeaderboard.share') }}</span>
+            </button>
             <button class="btn btn-secondary" :disabled="loading" @click="loadData()">
               <Icon name="refresh" size="sm" :class="{ 'animate-spin': loading }" />
               <span>{{ t('common.refresh') }}</span>
@@ -157,6 +161,13 @@
           </section>
         </aside>
       </div>
+
+      <TokenLeaderboardShareDialog
+        :show="shareDialogOpen"
+        :data="data"
+        :view-mode="viewMode"
+        @close="shareDialogOpen = false"
+      />
     </div>
   </AppLayout>
 </template>
@@ -166,6 +177,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
+import TokenLeaderboardShareDialog from '@/components/user/TokenLeaderboardShareDialog.vue'
 import tokenLeaderboardAPI from '@/api/tokenLeaderboard'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
@@ -178,6 +190,7 @@ const authStore = useAuthStore()
 const data = ref<TokenLeaderboardData | null>(null)
 const loading = ref(false)
 const exchanging = ref(false)
+const shareDialogOpen = ref(false)
 const viewMode = ref<'realtime' | 'history'>('realtime')
 const lastRefreshedAt = ref<Date | null>(null)
 let autoRefreshTimer: ReturnType<typeof setInterval> | null = null

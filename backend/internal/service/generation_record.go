@@ -70,6 +70,7 @@ type GenerationRecordRepository interface {
 	ListByUser(context.Context, int64, int) ([]*GenerationRecord, error)
 	GetByUser(context.Context, int64, string) (*GenerationRecord, error)
 	GetByUpstream(context.Context, int64, int64, int64, string, string) (*GenerationRecord, error)
+	Delete(context.Context, int64, string) error
 	TaskExists(context.Context, string) (bool, error)
 	Cleanup(context.Context, int64, time.Time, int) ([]string, error)
 	ListPendingVideos(context.Context, time.Time, int) ([]*GenerationRecord, error)
@@ -232,6 +233,21 @@ func (s *GenerationRecordService) List(ctx context.Context, userID int64, limit 
 	return s.repo.ListByUser(ctx, userID, limit)
 }
 
+func (s *GenerationRecordService) Delete(ctx context.Context, userID int64, taskID string) error {
+	if s == nil || s.repo == nil || userID <= 0 {
+		return errors.New("生成记录服务不可用")
+	}
+	taskID = strings.TrimSpace(taskID)
+	if !isSafeGenerationTaskID(taskID) {
+		return os.ErrNotExist
+	}
+	if err := s.repo.Delete(ctx, userID, taskID); err != nil {
+		return err
+	}
+	s.removeTaskFiles([]string{taskID})
+	return nil
+}
+
 func (s *GenerationRecordService) runCleanupLoop() {
 	select {
 	case <-s.stop:
@@ -378,13 +394,17 @@ func (s *GenerationRecordService) removeOrphanTaskFiles(ctx context.Context) err
 
 func (s *GenerationRecordService) removeTaskFiles(taskIDs []string) {
 	for _, taskID := range taskIDs {
-		if taskID == "" || filepath.Base(taskID) != taskID {
+		if !isSafeGenerationTaskID(taskID) {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(s.dataDir, taskID)); err != nil {
 			logger.LegacyPrintf("service.generation_record", "删除生成记录文件失败 task_id=%s: %v", taskID, err)
 		}
 	}
+}
+
+func isSafeGenerationTaskID(taskID string) bool {
+	return taskID != "" && taskID != "." && taskID != ".." && filepath.Base(taskID) == taskID
 }
 
 func (s *GenerationRecordService) ContentPath(ctx context.Context, userID int64, taskID string, index int) (string, error) {

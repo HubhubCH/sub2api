@@ -12,6 +12,13 @@ export type GatewayVideoProvider = 'grok' | 'agnes'
 export type VideoProvider = GatewayVideoProvider | 'comfyui'
 export type VideoModel = string
 export type VideoResolution = '480p' | '720p' | '1080p'
+export type VideoQuality = VideoResolution
+export type VideoGenerationMode = 'text-to-video' | 'image-to-video'
+
+export interface VideoDimensions {
+  width: number
+  height: number
+}
 
 export interface VideoGenerateRequest {
   apiKey: string
@@ -25,6 +32,7 @@ export interface VideoGenerateRequest {
   size?: string
   width?: number
   height?: number
+  quality?: VideoQuality
   resolution?: VideoResolution
   mode?: string
   creatorTool?: string
@@ -133,14 +141,90 @@ export function videoModelsForProvider(
   )
 }
 
-function inferGrokCompatibleResolution(request: VideoGenerateRequest): VideoResolution {
-  if (request.resolution) return request.resolution
-  const width = Number(request.width) || 0
-  const height = Number(request.height) || 0
-  const shortEdge = width > 0 && height > 0 ? Math.min(width, height) : Math.max(width, height)
+function positiveInteger(value: unknown): number | undefined {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : undefined
+}
+
+export function parseVideoSize(size?: string): VideoDimensions | null {
+  const match = /^\s*(\d+)\s*[x×]\s*(\d+)\s*$/i.exec(size || '')
+  if (!match) return null
+  const width = positiveInteger(match[1])
+  const height = positiveInteger(match[2])
+  return width && height ? { width, height } : null
+}
+
+function videoRequestDimensions(request: VideoGenerateRequest): VideoDimensions | null {
+  const size = parseVideoSize(request.size)
+  const width = positiveInteger(request.width) ?? size?.width
+  const height = positiveInteger(request.height) ?? size?.height
+  return width && height ? { width, height } : null
+}
+
+function parseVideoAspectRatio(aspectRatio?: string): VideoDimensions | null {
+  const match = /^\s*(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)\s*$/.exec(aspectRatio || '')
+  if (!match) return null
+  const width = Number(match[1])
+  const height = Number(match[2])
+  return width > 0 && height > 0 ? { width, height } : null
+}
+
+function evenPixel(value: number): number {
+  return Math.max(2, Math.round(value / 2) * 2)
+}
+
+function agnesDimensionsForRequest(request: VideoGenerateRequest): VideoDimensions {
+  const explicitDimensions = videoRequestDimensions(request)
+  const quality = request.quality ?? request.resolution
+  if (!quality) return explicitDimensions ?? { width: 1152, height: 768 }
+
+  const ratio = explicitDimensions ?? parseVideoAspectRatio(request.aspectRatio) ?? { width: 3, height: 2 }
+  const shortEdge = Number.parseInt(quality, 10)
+  if (ratio.width === ratio.height) return { width: shortEdge, height: shortEdge }
+  if (ratio.width > ratio.height) {
+    return {
+      width: evenPixel(shortEdge * ratio.width / ratio.height),
+      height: shortEdge
+    }
+  }
+  return {
+    width: shortEdge,
+    height: evenPixel(shortEdge * ratio.height / ratio.width)
+  }
+}
+
+function greatestCommonDivisor(left: number, right: number): number {
+  let a = Math.abs(left)
+  let b = Math.abs(right)
+  while (b > 0) {
+    const remainder = a % b
+    a = b
+    b = remainder
+  }
+  return a || 1
+}
+
+export function videoAspectRatioForDimensions(dimensions: VideoDimensions): string {
+  const divisor = greatestCommonDivisor(dimensions.width, dimensions.height)
+  return `${dimensions.width / divisor}:${dimensions.height / divisor}`
+}
+
+export function videoQualityForDimensions(dimensions: VideoDimensions): VideoQuality {
+  const shortEdge = Math.min(dimensions.width, dimensions.height)
   if (shortEdge >= 1080) return '1080p'
   if (shortEdge >= 720) return '720p'
   return '480p'
+}
+
+export function videoGenerationModeForReference(referenceImage?: string): VideoGenerationMode {
+  return referenceImage?.trim() ? 'image-to-video' : 'text-to-video'
+}
+
+function inferGrokCompatibleResolution(
+  request: VideoGenerateRequest,
+  dimensions: VideoDimensions | null
+): VideoResolution {
+  return request.quality ?? request.resolution ?? (dimensions ? videoQualityForDimensions(dimensions) : '480p')
 }
 
 export function normalizeAgnesFrameCount(durationSeconds?: number): number {
@@ -158,17 +242,20 @@ function buildGrokCompatiblePayload(request: VideoGenerateRequest): Record<strin
     throw new Error(`Grok 兼容视频模型不受支持：${request.model}`)
   }
 
-  const images = [request.imageUrl, request.referenceImage]
+  const images = Array.from(new Set([request.imageUrl, request.referenceImage]
     .map((value) => value?.trim())
-    .filter((value): value is string => Boolean(value))
+    .filter((value): value is string => Boolean(value))))
+  const dimensions = videoRequestDimensions(request)
+  const aspectRatio = request.aspectRatio?.trim() ||
+    (dimensions ? videoAspectRatioForDimensions(dimensions) : undefined)
 
   return cleanPayload({
     provider: 'grok',
     model: request.model,
     prompt: request.prompt.trim(),
     duration: request.duration,
-    aspect_ratio: request.aspectRatio,
-    resolution: inferGrokCompatibleResolution(request),
+    aspect_ratio: aspectRatio,
+    resolution: inferGrokCompatibleResolution(request, dimensions),
     image: images[0] ? { url: images[0] } : undefined,
     reference_images: images.length > 1 ? images.slice(1).map((url) => ({ url })) : undefined
   })
@@ -180,19 +267,17 @@ function buildAgnesPayload(request: VideoGenerateRequest): Record<string, unknow
   }
 
   const image = request.imageUrl?.trim() || request.referenceImage?.trim()
-  const width = Number.isFinite(Number(request.width)) && Number(request.width) > 0 ? Number(request.width) : 1152
-  const height = Number.isFinite(Number(request.height)) && Number(request.height) > 0 ? Number(request.height) : 768
+  const dimensions = agnesDimensionsForRequest(request)
 
   return cleanPayload({
     provider: 'agnes',
     model: AGNES_VIDEO_MODEL,
     prompt: request.prompt.trim(),
     image,
-    width,
-    height,
+    width: dimensions.width,
+    height: dimensions.height,
     num_frames: normalizeAgnesFrameCount(request.duration),
-    frame_rate: AGNES_VIDEO_FRAME_RATE,
-    mode: request.mode
+    frame_rate: AGNES_VIDEO_FRAME_RATE
   })
 }
 

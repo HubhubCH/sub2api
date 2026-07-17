@@ -11,6 +11,26 @@ function streamResponse(events: string[]): Response {
   })
 }
 
+function stubImageCanvas(sourceWidth: number, sourceHeight: number, encodedBytes = 'resized-image') {
+  const decodedImage = {
+    width: sourceWidth,
+    height: sourceHeight,
+    close: vi.fn(),
+  }
+  const drawImage = vi.fn()
+  const canvas = {
+    width: 0,
+    height: 0,
+    getContext: vi.fn(() => ({ drawImage })),
+    toBlob: vi.fn((callback: BlobCallback, mimeType?: string) => {
+      callback(new Blob([encodedBytes], { type: mimeType || 'image/png' }))
+    }),
+  }
+  vi.stubGlobal('createImageBitmap', vi.fn().mockResolvedValue(decodedImage))
+  vi.spyOn(document, 'createElement').mockReturnValue(canvas as unknown as HTMLCanvasElement)
+  return { canvas, decodedImage, drawImage }
+}
+
 describe('imageGeneration API streaming transport', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn())
@@ -112,7 +132,7 @@ describe('imageGeneration API streaming transport', () => {
     expect(result).toEqual(['gpt-image-2', 'grok-imagine-image'])
   })
 
-  it('maps gpt-image-2 dimensions to the upstream aspect and resolution contract', async () => {
+  it('maps gpt-image-2 dimensions to the upstream size, aspect and resolution contract', async () => {
     vi.mocked(fetch).mockResolvedValue(
       new Response(JSON.stringify({ data: [{ b64_json: 'MmstaW1hZ2U=' }] }), {
         status: 200,
@@ -133,11 +153,11 @@ describe('imageGeneration API streaming transport', () => {
     const body = JSON.parse(String(init?.body))
     expect(body).toEqual(
       expect.objectContaining({
+        size: '1536x1024',
         aspect_ratio: '16:9',
         resolution: '2K',
       })
     )
-    expect(body).not.toHaveProperty('size')
   })
 
   it('normalizes legacy GPT Image sizes to a model-supported orientation', async () => {
@@ -163,6 +183,85 @@ describe('imageGeneration API streaming transport', () => {
         size: '1536x1024',
       })
     )
+  })
+
+  it('resizes Grok base64 results to the requested pixel dimensions', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({
+        data: [{ b64_json: 'c291cmNlLWltYWdl', output_format: 'png' }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    )
+    const { canvas, decodedImage, drawImage } = stubImageCanvas(1024, 1024)
+
+    const result = await generateImage({
+      apiKey: API_KEY,
+      model: 'grok-imagine-image',
+      prompt: 'draw a wide landscape',
+      size: '1920x1080',
+      quality: 'high',
+      count: 1,
+      outputFormat: 'png',
+    })
+
+    const [, init] = vi.mocked(fetch).mock.calls[0]
+    expect(JSON.parse(String(init?.body))).toEqual(expect.objectContaining({ size: '1920x1080' }))
+    expect(canvas.width).toBe(1920)
+    expect(canvas.height).toBe(1080)
+    expect(drawImage).toHaveBeenCalledWith(
+      decodedImage,
+      0,
+      224,
+      1024,
+      576,
+      0,
+      0,
+      1920,
+      1080
+    )
+    expect(decodedImage.close).toHaveBeenCalledTimes(1)
+    expect(result.data?.[0]).toEqual(expect.objectContaining({
+      b64_json: 'cmVzaXplZC1pbWFnZQ==',
+      output_format: 'png',
+      size: '1920x1080',
+    }))
+  })
+
+  it('downloads and resizes Grok URL results while keeping the image response contract', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [{ url: 'https://images.example/result.png' }] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(new Blob(['source-image'], { type: 'image/png' }), { status: 200 })
+      )
+    const { canvas } = stubImageCanvas(1024, 1024, 'portrait-image')
+
+    const result = await generateImage({
+      apiKey: API_KEY,
+      model: 'grok-imagine-image-quality',
+      prompt: 'draw a portrait',
+      size: '800x1200',
+      quality: 'high',
+      count: 1,
+      outputFormat: 'webp',
+    })
+
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(fetch).mock.calls[1][0]).toBe('https://images.example/result.png')
+    expect(canvas.width).toBe(800)
+    expect(canvas.height).toBe(1200)
+    expect(result.data?.[0]).toEqual(expect.objectContaining({
+      url: 'https://images.example/result.png',
+      b64_json: 'cG9ydHJhaXQtaW1hZ2U=',
+      output_format: 'webp',
+      size: '800x1200',
+    }))
   })
 
   it('surfaces an SSE error message instead of a generic 524-style failure', async () => {
@@ -198,7 +297,7 @@ describe('imageGeneration API streaming transport', () => {
       apiKey: API_KEY,
       model: 'gpt-image-2',
       prompt: 'replace the background',
-      size: '1024x1024',
+      size: '2048x3072',
       quality: 'high',
       count: 1,
       outputFormat: 'webp',
@@ -211,9 +310,9 @@ describe('imageGeneration API streaming transport', () => {
     const body = init?.body as FormData
     expect(body.get('stream')).toBe('true')
     expect(body.get('partial_images')).toBe('1')
-    expect(body.get('aspect_ratio')).toBe('1:1')
-    expect(body.get('resolution')).toBe('1K')
-    expect(body.get('size')).toBeNull()
+    expect(body.get('size')).toBe('1024x1536')
+    expect(body.get('aspect_ratio')).toBe('2:3')
+    expect(body.get('resolution')).toBe('2K')
     expect(body.get('image')).toBe(image)
     expect(body.get('mask')).toBe(mask)
   })

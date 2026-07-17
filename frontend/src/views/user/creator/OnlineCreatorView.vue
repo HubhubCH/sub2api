@@ -18,6 +18,8 @@
           :local-records="localRecords"
           @restore-backend="restoreRecord"
           @restore-local="restoreLocalRecord"
+          @delete-backend="deleteBackendRecord"
+          @delete-local="deleteLocalRecord"
         />
 
         <section v-else class="creator-form-card">
@@ -30,6 +32,17 @@
           <p v-if="selectedApiKey" class="key-context">
             当前分组：{{ selectedApiKey.group?.name || '默认分组' }}
             <span>平台：{{ selectedApiKey.group?.platform || '自动路由' }}</span>
+          </p>
+          <CreatorKeyPicker
+            v-model="backupKeyId"
+            :keys="backupKeys"
+            :disabled="submitting"
+            label="备用文本密钥"
+            empty-label="不使用备用文本密钥"
+            test-id="creator-backup-key"
+          />
+          <p v-if="backupApiKey" class="key-context">
+            文本模型：{{ backupTextModels.length ? `${backupTextModels.length} 个可用` : backupTextModelError || '正在检测' }}
           </p>
 
           <div v-if="modelWarning" class="unsupported-note">
@@ -57,21 +70,29 @@
                 </select>
               </label>
 
-              <label v-if="isImageTool || activeTool === 'batch-main' || activeTool === 'batch-clone'" class="field-block">
-                <span>画面尺寸</span>
-                <select v-model="imageSize" class="field-control" data-test="creator-image-size">
-                  <option value="1024x1024">1024 x 1024</option>
-                  <option value="1536x1024">1536 x 1024</option>
-                  <option value="1024x1536">1024 x 1536</option>
-                </select>
-              </label>
-
               <label v-if="activeTool === 'video'" class="field-block">
                 <span>视频时长</span>
                 <select v-model.number="videoDuration" class="field-control">
                   <option :value="5">5 秒</option>
                   <option :value="10">10 秒</option>
                   <option :value="15">15 秒</option>
+                </select>
+              </label>
+
+              <label v-if="activeTool === 'video'" class="field-block">
+                <span>视频尺寸</span>
+                <select v-model="videoSize" class="field-control" data-test="creator-video-size">
+                  <option value="1280x720">1280 x 720（16:9）</option>
+                  <option value="720x1280">720 x 1280（9:16）</option>
+                  <option value="1024x1024">1024 x 1024（1:1）</option>
+                </select>
+              </label>
+
+              <label v-if="activeTool === 'video'" class="field-block">
+                <span>画质</span>
+                <select v-model="videoQuality" class="field-control" data-test="creator-video-quality">
+                  <option value="720p">标准（720p）</option>
+                  <option value="1080p">高清（1080p）</option>
                 </select>
               </label>
 
@@ -95,6 +116,12 @@
               </label>
             </div>
           </div>
+
+          <CreatorCanvasSizeControl
+            v-if="isImageTool || activeTool === 'batch-main' || activeTool === 'batch-clone'"
+            v-model="imageSize"
+            :disabled="submitting"
+          />
 
           <div v-if="activeTool === 'image'" class="panel-block image-settings">
             <div class="field-block">
@@ -193,6 +220,17 @@
             />
           </div>
 
+          <div v-if="activeTool === 'video'" class="panel-block">
+            <CreatorImageUpload
+              input-id="creator-video-reference-file"
+              data-test="creator-video-reference-file"
+              :files="videoReferenceFile ? [videoReferenceFile] : []"
+              label="视频参考图（可选）"
+              hint="不上传为文生视频，上传后为图生视频"
+              @update:files="setVideoReferenceFiles"
+            />
+          </div>
+
           <div v-if="activeTool === 'batch-main' || activeTool === 'batch-clone'" class="panel-block">
             <CreatorImageUpload
               v-if="activeTool === 'batch-clone'"
@@ -241,7 +279,19 @@
                 :placeholder="activeToolConfig.placeholder"
               />
             </label>
+            <p v-if="activePromptOptimization?.error" class="prompt-optimize-error">{{ activePromptOptimization.error }}</p>
             <div class="prompt-actions">
+              <button
+                type="button"
+                class="secondary-button optimize-button"
+                data-test="creator-optimize-prompt"
+                :disabled="!canOptimizePrompt"
+                :title="promptOptimizationHint"
+                @click="optimizeCurrentPrompt"
+              >
+                <Icon :name="activePromptOptimization?.loading ? 'refresh' : 'sparkles'" size="sm" :class="{ 'animate-spin': activePromptOptimization?.loading }" />
+                {{ activePromptOptimization?.loading ? '优化中' : '优化提示词' }}
+              </button>
               <button type="button" class="secondary-button" :disabled="submitting" @click="resetCurrentInput">
                 清空
               </button>
@@ -263,6 +313,8 @@
         :loading="submitting"
         :error="errorMessage"
         :status="statusMessage"
+        :canvas-size="resultCanvasSize"
+        :estimate-seconds="estimatedWaitSeconds"
         @restore="restoreRecord"
         @restore-local="restoreLocalRecord"
         @copy="copyText"
@@ -281,9 +333,10 @@ import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
 import CreatorHomePanel, { type CreatorRecentItem } from '@/components/user/creator/CreatorHomePanel.vue'
 import CreatorHistoryPanel, { type CreatorLocalRecord } from '@/components/user/creator/CreatorHistoryPanel.vue'
+import CreatorCanvasSizeControl from '@/components/user/creator/CreatorCanvasSizeControl.vue'
 import CreatorImageUpload from '@/components/user/creator/CreatorImageUpload.vue'
 import CreatorKeyPicker from '@/components/user/creator/CreatorKeyPicker.vue'
-import CreatorResultPanel from '@/components/user/creator/CreatorResultPanel.vue'
+import CreatorResultPanel, { type CreatorOutput } from '@/components/user/creator/CreatorResultPanel.vue'
 import CreatorToolRail from '@/components/user/creator/CreatorToolRail.vue'
 import { keysAPI } from '@/api'
 import { generationRecordsAPI, type GenerationRecord } from '@/api/generationRecords'
@@ -292,21 +345,28 @@ import { imageGenerationAPI } from '@/api/imageGeneration'
 import { AGNES_VIDEO_MODEL, videoGenerationAPI, type GatewayVideoProvider } from '@/api/videoGeneration'
 import * as batchImageAPI from '@/api/batchImage'
 import { isUsableCreatorKey, onlineCreatorAPI } from '@/api/onlineCreator'
+import {
+  claimCreatorRuntimeForCurrentUser,
+  createCreatorObjectURL,
+  creatorBatchAPIKeys,
+  creatorBatchPollTimers,
+  creatorBatchRecordContexts,
+  creatorRecordRevision,
+  creatorTaskStates,
+  creatorVideoPollTimers,
+  creatorVideoTasks,
+  creatorWorkToolIds,
+  estimateCreatorDuration,
+  notifyCreatorRecordsChanged,
+  recordCreatorDuration,
+  type CreatorBatchRecordContext,
+  type CreatorTaskState,
+  type CreatorWorkToolId,
+} from '@/composables/useCreatorRuntime'
+import { createOutpaintFiles } from '@/utils/imageOutpaint'
 import type { ApiKey } from '@/types'
 
-type CreatorToolId =
-  | 'home'
-  | 'image'
-  | 'edit'
-  | 'product-copy'
-  | 'outpaint'
-  | 'batch-main'
-  | 'batch-clone'
-  | 'watermark'
-  | 'video'
-  | 'history'
-
-type CreatorWorkToolId = Exclude<CreatorToolId, 'home' | 'history'>
+type CreatorToolId = CreatorWorkToolId | 'home' | 'history'
 
 const props = withDefaults(defineProps<{ initialTool?: string }>(), {
   initialTool: 'home',
@@ -321,43 +381,10 @@ interface CreatorToolConfig {
   placeholder: string
 }
 
-interface CreatorOutput {
-  type: 'text' | 'image' | 'video' | 'batch'
-  content: string
-  url?: string
-  batchId?: string
-  batchReady?: boolean
-  videoRequestId?: string
-  items?: Array<{
-    id: string
-    label: string
-    status: string
-    url?: string
-    filename?: string
-    error?: string
-  }>
-}
-
-interface CreatorTaskState {
-  output: CreatorOutput | null
-  loading: boolean
-  running: boolean
-  status: string
-  error: string
-  version: number
-  controller: AbortController | null
-}
-
 interface CreatorTaskContext {
   toolId: CreatorWorkToolId
   state: CreatorTaskState
   version: number
-}
-
-interface CreatorBatchRecordContext {
-  apiKey: string
-  job: batchImageAPI.BatchImageJob
-  toolId: 'batch-main' | 'batch-clone'
 }
 
 type CreatorModelCapability = 'text' | 'image' | 'video' | 'batch'
@@ -375,16 +402,7 @@ const tools: CreatorToolConfig[] = [
   { id: 'history', label: '历史记录', badge: '记录', icon: 'clock', action: '查看', placeholder: '' },
 ]
 
-const workToolIds: CreatorWorkToolId[] = [
-  'image',
-  'edit',
-  'product-copy',
-  'outpaint',
-  'batch-main',
-  'batch-clone',
-  'watermark',
-  'video',
-]
+const workToolIds = creatorWorkToolIds
 
 const imageSceneOptions = [
   { id: 'product', label: '商品白底图', directive: '电商商品白底主图，主体居中，边缘清晰，光线均匀，无多余装饰。' },
@@ -409,55 +427,118 @@ const activeTool = ref<CreatorToolId>(normalizeCreatorToolId(props.initialTool))
 const apiKeys = ref<ApiKey[]>([])
 const userGroupRates = ref<Record<number, number>>({})
 const selectedKeyId = ref('')
+const backupKeyId = ref('')
 const textModels = ref<string[]>([])
+const backupTextModels = ref<string[]>([])
+const backupTextModelError = ref('')
 const imageModels = ref<string[]>([])
 const videoModels = ref<string[]>([])
 const batchModels = ref<string[]>([])
 const batchAPIAvailable = ref(false)
 const modelLoadErrors = ref<Partial<Record<CreatorModelCapability, string>>>({})
 const selectedModel = ref('')
-const targetLanguage = ref('中文')
-const imageSize = ref('1024x1024')
-const imageScene = ref<(typeof imageSceneOptions)[number]['id'] | ''>('')
-const imageQuality = ref('high')
-const imageStyle = ref('auto')
-const imageBackground = ref('auto')
-const outpaintDirection = ref<(typeof outpaintDirectionOptions)[number]['id']>('all')
-const outpaintRatio = ref(0.5)
-const videoDuration = ref(5)
-const prompt = ref('')
-const productName = ref('')
-const productInfo = ref('')
-const productPlatform = ref('闲鱼')
-const watermarkMode = ref<'remove' | 'text' | 'logo'>('remove')
-const watermarkText = ref('')
-const selectedImageFile = ref<File | null>(null)
-const referenceImageFile = ref<File | null>(null)
-const logoFile = ref<File | null>(null)
-const batchProductFiles = ref<File[]>([])
+
+interface CreatorFormState {
+  prompt: string
+  targetLanguage: string
+  imageSize: string
+  imageScene: (typeof imageSceneOptions)[number]['id'] | ''
+  imageQuality: string
+  imageStyle: string
+  imageBackground: string
+  outpaintDirection: (typeof outpaintDirectionOptions)[number]['id']
+  outpaintRatio: number
+  videoDuration: number
+  videoSize: string
+  videoQuality: string
+  productName: string
+  productInfo: string
+  productPlatform: string
+  watermarkMode: 'remove' | 'text' | 'logo'
+  watermarkText: string
+  selectedImageFile: File | null
+  referenceImageFile: File | null
+  videoReferenceFile: File | null
+  logoFile: File | null
+  batchProductFiles: File[]
+}
+
+function createFormState(): CreatorFormState {
+  return {
+    prompt: '',
+    targetLanguage: '中文',
+    imageSize: '1024x1024',
+    imageScene: '',
+    imageQuality: 'high',
+    imageStyle: 'auto',
+    imageBackground: 'auto',
+    outpaintDirection: 'all',
+    outpaintRatio: 0.5,
+    videoDuration: 5,
+    videoSize: '1280x720',
+    videoQuality: '720p',
+    productName: '',
+    productInfo: '',
+    productPlatform: '闲鱼',
+    watermarkMode: 'remove',
+    watermarkText: '',
+    selectedImageFile: null,
+    referenceImageFile: null,
+    videoReferenceFile: null,
+    logoFile: null,
+    batchProductFiles: [],
+  }
+}
+
+const formStates = reactive<Record<CreatorWorkToolId, CreatorFormState>>(
+  Object.fromEntries(workToolIds.map((toolId) => [toolId, createFormState()])) as Record<CreatorWorkToolId, CreatorFormState>,
+)
+const activeForm = computed(() => isWorkTool(activeTool.value) ? formStates[activeTool.value] : formStates.image)
+function activeFormField<K extends keyof CreatorFormState>(key: K) {
+  return computed({
+    get: () => activeForm.value[key],
+    set: (value: CreatorFormState[K]) => { activeForm.value[key] = value },
+  })
+}
+const targetLanguage = activeFormField('targetLanguage')
+const imageSize = activeFormField('imageSize')
+const imageScene = activeFormField('imageScene')
+const imageQuality = activeFormField('imageQuality')
+const imageStyle = activeFormField('imageStyle')
+const imageBackground = activeFormField('imageBackground')
+const outpaintDirection = activeFormField('outpaintDirection')
+const outpaintRatio = activeFormField('outpaintRatio')
+const videoDuration = activeFormField('videoDuration')
+const videoSize = activeFormField('videoSize')
+const videoQuality = activeFormField('videoQuality')
+const prompt = activeFormField('prompt')
+const productName = activeFormField('productName')
+const productInfo = activeFormField('productInfo')
+const productPlatform = activeFormField('productPlatform')
+const watermarkMode = activeFormField('watermarkMode')
+const watermarkText = activeFormField('watermarkText')
+const selectedImageFile = activeFormField('selectedImageFile')
+const referenceImageFile = activeFormField('referenceImageFile')
+const videoReferenceFile = activeFormField('videoReferenceFile')
+const logoFile = activeFormField('logoFile')
+const batchProductFiles = activeFormField('batchProductFiles')
 const records = ref<GenerationRecord[]>([])
 const recordLoadError = ref('')
 const localRecords = ref<CreatorLocalRecord[]>([])
-const taskStates = reactive<Record<CreatorWorkToolId, CreatorTaskState>>(
-  Object.fromEntries(workToolIds.map((toolId) => [toolId, {
-    output: null,
-    loading: false,
-    running: false,
-    status: '',
-    error: '',
-    version: 0,
-    controller: null,
-  }])) as Record<CreatorWorkToolId, CreatorTaskState>,
-)
+claimCreatorRuntimeForCurrentUser()
+const taskStates = creatorTaskStates
 let modelRequestVersion = 0
+let backupModelRequestVersion = 0
 let restoreRequestVersion = 0
 let recordRequestVersion = 0
-const videoPollTimers = new Map<CreatorWorkToolId, number>()
-const batchPollTimers = new Map<CreatorWorkToolId, number>()
-const objectUrls = new Set<string>()
-const batchAPIKeys = new Map<string, string>()
-const batchRecordContexts = new Map<string, CreatorBatchRecordContext>()
-const videoTasks = new Map<string, { apiKey: string; provider: GatewayVideoProvider; model: string }>()
+const videoPollTimers = creatorVideoPollTimers
+const batchPollTimers = creatorBatchPollTimers
+const batchAPIKeys = creatorBatchAPIKeys
+const batchRecordContexts = creatorBatchRecordContexts
+const videoTasks = creatorVideoTasks
+const promptOptimizationStates = reactive<Record<CreatorWorkToolId, { loading: boolean; error: string; version: number }>>(
+  Object.fromEntries(workToolIds.map((toolId) => [toolId, { loading: false, error: '', version: 0 }])) as Record<CreatorWorkToolId, { loading: boolean; error: string; version: number }>,
+)
 const POLL_INTERVAL_MS = 5000
 const MAX_POLL_RETRIES = 3
 const MAX_POLL_ATTEMPTS = 60
@@ -465,17 +546,24 @@ const GATEWAY_REQUEST_TIMEOUT_MS = 180000
 const BATCH_REQUEST_TIMEOUT_MS = 10 * 60 * 1000
 const GENERATION_RECORD_RETENTION_MS = 72 * 60 * 60 * 1000
 const BATCH_RECORD_QUERY_CONCURRENCY = 4
+const LOCAL_RECORD_STORAGE_PREFIX = 'online-creator-local-copy-v1'
+let localRecordCleanupTimer = 0
 
 const activeToolConfig = computed(() => tools.find((tool) => tool.id === activeTool.value) || tools[0])
 const activeTaskState = computed(() => isWorkTool(activeTool.value) ? taskStates[activeTool.value] : null)
 const output = computed(() => activeTaskState.value?.output || null)
 const submitting = computed(() => Boolean(activeTaskState.value?.loading || activeTaskState.value?.running))
-const statusMessage = computed(() => activeTaskState.value?.status || '')
+const statusMessage = computed(() => submitting.value ? '正在创作中' : activeTaskState.value?.status || '')
 const errorMessage = computed(() => activeTaskState.value?.error || '')
 const homeTools = computed(() => tools.filter((tool) => tool.id !== 'home' && tool.id !== 'history'))
-const selectedApiKey = computed(() => usableKeys.value.find((key) => String(key.id) === selectedKeyId.value) || null)
-const usesGrokImageModel = computed(() => isGrokImageModelName(selectedModel.value))
 const usableKeys = computed(() => apiKeys.value.filter((key) => isUsableCreatorKey(key)))
+const selectedApiKey = computed(() => usableKeys.value.find((key) => String(key.id) === selectedKeyId.value) || null)
+const backupKeys = computed(() => usableKeys.value.filter((key) => String(key.id) !== selectedKeyId.value))
+const backupApiKey = computed(() => backupKeys.value.find((key) => String(key.id) === backupKeyId.value) || null)
+const effectiveTextApiKey = computed(() => backupApiKey.value || selectedApiKey.value)
+const effectiveTextModels = computed(() => backupApiKey.value ? backupTextModels.value : textModels.value)
+const submissionApiKey = computed(() => activeTool.value === 'product-copy' ? effectiveTextApiKey.value : selectedApiKey.value)
+const usesGrokImageModel = computed(() => isGrokImageModelName(selectedModel.value))
 const isTextTool = computed(() => activeTool.value === 'product-copy')
 const isImageTool = computed(() => ['image', 'edit', 'outpaint', 'watermark'].includes(activeTool.value))
 const needsModel = computed(() => !['home', 'history'].includes(activeTool.value) && !(activeTool.value === 'watermark' && watermarkMode.value !== 'remove'))
@@ -486,18 +574,40 @@ const imageUploadLabel = computed(() => {
   return '上传需要编辑的图片'
 })
 const modelOptions = computed(() => {
-  if (isTextTool.value) return textModels.value
+  if (isTextTool.value) return effectiveTextModels.value
   if (isImageTool.value) return imageModels.value
   if (activeTool.value === 'video') return videoModels.value
   if (activeTool.value === 'batch-main' || activeTool.value === 'batch-clone') return batchModels.value
   return []
 })
+const activePromptOptimization = computed(() => isWorkTool(activeTool.value) ? promptOptimizationStates[activeTool.value] : null)
+const canOptimizePrompt = computed(() => Boolean(
+  isWorkTool(activeTool.value) &&
+  prompt.value.trim() &&
+  effectiveTextApiKey.value?.key &&
+  effectiveTextModels.value.length > 0 &&
+  !activePromptOptimization.value?.loading,
+))
+const promptOptimizationHint = computed(() => {
+  if (!prompt.value.trim()) return '请先输入提示词'
+  if (!effectiveTextApiKey.value?.key) return '请选择主密钥或备用文本密钥'
+  if (effectiveTextModels.value.length === 0) return backupTextModelError.value || modelLoadErrors.value.text || '当前密钥没有文本模型'
+  return '使用文本模型优化当前工具的提示词'
+})
+const resultCanvasSize = computed(() => {
+  if (output.value?.size) return output.value.size
+  if (isImageTool.value || activeTool.value === 'batch-main' || activeTool.value === 'batch-clone') return imageSize.value
+  if (activeTool.value === 'video') return videoSize.value
+  return ''
+})
+const estimatedWaitSeconds = computed(() => activeTaskState.value?.estimateSeconds || 0)
 const promptLabel = computed(() => {
   if (activeTool.value === 'batch-main' || activeTool.value === 'batch-clone') return '统一要求'
   return '创作提示词'
 })
 const activeModelLoadError = computed(() => {
   let capability: CreatorModelCapability | null = null
+  if (isTextTool.value && backupApiKey.value) return backupTextModelError.value
   if (isTextTool.value) capability = 'text'
   else if (isImageTool.value) capability = 'image'
   else if (activeTool.value === 'video') capability = 'video'
@@ -511,7 +621,7 @@ const modelWarning = computed(() => {
   return ''
 })
 const canSubmit = computed(() => {
-  if (!selectedApiKey.value?.key || submitting.value || activeTool.value === 'home' || activeTool.value === 'history') return false
+  if (!submissionApiKey.value?.key || submitting.value || activeTool.value === 'home' || activeTool.value === 'history') return false
   if (needsModel.value && !selectedModel.value && activeTool.value !== 'batch-main' && activeTool.value !== 'batch-clone') return false
   if (activeTool.value === 'product-copy') return Boolean(productName.value && productInfo.value)
   if (activeTool.value === 'image') return prompt.value.length > 0
@@ -581,6 +691,7 @@ function resetCurrentInput() {
   watermarkText.value = ''
   selectedImageFile.value = null
   referenceImageFile.value = null
+  videoReferenceFile.value = null
   logoFile.value = null
   batchProductFiles.value = []
   imageScene.value = ''
@@ -606,6 +717,29 @@ function isGrokImageModelName(model: string): boolean {
   return model.trim().toLowerCase().startsWith('grok-imagine')
 }
 
+function imageSizeTier(size: string): '1K' | '2K' {
+  const [width, height] = size.split('x').map(Number)
+  return Math.max(width || 1024, height || 1024) > 1024 ? '2K' : '1K'
+}
+
+function imageAspectRatio(size: string): string {
+  const [width, height] = size.split('x').map(Number)
+  if (!width || !height) return '1:1'
+  const candidates = [
+    { label: '1:1', ratio: 1 },
+    { label: '4:3', ratio: 4 / 3 },
+    { label: '3:4', ratio: 3 / 4 },
+    { label: '16:9', ratio: 16 / 9 },
+    { label: '9:16', ratio: 9 / 16 },
+    { label: '3:2', ratio: 3 / 2 },
+    { label: '2:3', ratio: 2 / 3 },
+  ]
+  const ratio = width / height
+  return candidates.reduce((closest, candidate) => (
+    Math.abs(candidate.ratio - ratio) < Math.abs(closest.ratio - ratio) ? candidate : closest
+  )).label
+}
+
 function buildImagePrompt(sourcePrompt: string): string {
   const scene = imageSceneOptions.find((item) => item.id === imageScene.value)
   const styleDirective = imageStyle.value === 'natural'
@@ -616,6 +750,37 @@ function buildImagePrompt(sourcePrompt: string): string {
   return [scene?.directive, sourcePrompt, styleDirective].filter(Boolean).join('\n')
 }
 
+async function optimizeCurrentPrompt(): Promise<void> {
+  if (!canOptimizePrompt.value || !isWorkTool(activeTool.value) || !effectiveTextApiKey.value) return
+  const toolId = activeTool.value
+  const state = promptOptimizationStates[toolId]
+  const version = ++state.version
+  const sourcePrompt = formStates[toolId].prompt.trim()
+  const model = effectiveTextModels.value[0]
+  const apiKey = effectiveTextApiKey.value.key
+  state.loading = true
+  state.error = ''
+  try {
+    const result = await onlineCreatorAPI.createTextCompletion({
+      apiKey,
+      model,
+      mode: 'prompt-optimize',
+      prompt: `创作工具：${creatorToolLabel(toolId)}\n原始提示词：${sourcePrompt}`,
+      targetLanguage: '中文',
+    })
+    if (state.version !== version) return
+    if (formStates[toolId].prompt.trim() !== sourcePrompt) {
+      state.error = '提示词已被修改，本次优化结果未自动覆盖。'
+      return
+    }
+    formStates[toolId].prompt = result.content.trim()
+  } catch (error) {
+    if (state.version === version) state.error = extractErrorMessage(error, '提示词优化失败')
+  } finally {
+    if (state.version === version) state.loading = false
+  }
+}
+
 function isWorkTool(toolId: CreatorToolId): toolId is CreatorWorkToolId {
   return toolId !== 'home' && toolId !== 'history'
 }
@@ -624,14 +789,11 @@ function isTaskCurrent(task: CreatorTaskContext): boolean {
   return task.state.version === task.version
 }
 
-function cancelAllRequests() {
-  for (const state of Object.values(taskStates)) {
-    state.version += 1
-    state.controller?.abort()
-    state.controller = null
-    state.loading = false
-    state.running = false
-  }
+function finishTaskTiming(task: CreatorTaskContext): void {
+  if (!task.state.startedAt) return
+  recordCreatorDuration(task.toolId, task.state.timingKey, Date.now() - task.state.startedAt)
+  task.state.estimateSeconds = estimateCreatorDuration(task.toolId, task.state.timingKey)
+  task.state.startedAt = 0
 }
 
 function setSelectedImageFiles(files: File[]) {
@@ -640,6 +802,10 @@ function setSelectedImageFiles(files: File[]) {
 
 function setReferenceImageFiles(files: File[]) {
   referenceImageFile.value = files[0] || null
+}
+
+function setVideoReferenceFiles(files: File[]) {
+  videoReferenceFile.value = files[0] || null
 }
 
 function setLogoFiles(files: File[]) {
@@ -656,7 +822,7 @@ function extractErrorMessage(error: unknown, fallback: string): string {
   return String(record?.message || fallback)
 }
 
-function imageOutputFromResponse(response: unknown): CreatorOutput {
+function imageOutputFromResponse(response: unknown, size: string): CreatorOutput {
   const payload = response && typeof response === 'object' ? response as {
     data?: Array<{ b64_json?: string; url?: string }>
     output?: Array<{ b64_json?: string; url?: string }>
@@ -665,7 +831,7 @@ function imageOutputFromResponse(response: unknown): CreatorOutput {
   if (!item) throw new Error('图片接口已返回，但没有找到可展示结果')
   const url = item.b64_json ? `data:image/png;base64,${item.b64_json}` : item.url
   if (!url) throw new Error('图片结果缺少 URL 或 base64 内容')
-  return { type: 'image', url, content: '图片生成完成' }
+  return { type: 'image', url, content: '图片生成完成', size }
 }
 
 async function loadModelsForSelectedKey() {
@@ -705,12 +871,35 @@ async function loadModelsForSelectedKey() {
   syncSelectedModel()
 }
 
+async function loadBackupTextModels() {
+  const apiKey = backupApiKey.value?.key
+  const requestVersion = ++backupModelRequestVersion
+  backupTextModels.value = []
+  backupTextModelError.value = ''
+  if (!apiKey) {
+    if (isTextTool.value) syncSelectedModel()
+    return
+  }
+  try {
+    const models = await onlineCreatorAPI.listTextModels(apiKey)
+    if (requestVersion !== backupModelRequestVersion || backupApiKey.value?.key !== apiKey) return
+    backupTextModels.value = models
+    if (models.length === 0) backupTextModelError.value = '该密钥没有文本模型'
+  } catch (error) {
+    if (requestVersion !== backupModelRequestVersion || backupApiKey.value?.key !== apiKey) return
+    backupTextModelError.value = extractErrorMessage(error, '备用文本模型加载失败')
+  } finally {
+    if (requestVersion === backupModelRequestVersion && isTextTool.value) syncSelectedModel()
+  }
+}
+
 async function loadApiKeys() {
   const response = await keysAPI.list(1, 100, { status: 'active' })
   apiKeys.value = response.items.filter((key) => isUsableCreatorKey(key))
   if (!apiKeys.value.some((key) => String(key.id) === selectedKeyId.value)) {
     selectedKeyId.value = apiKeys.value[0] ? String(apiKeys.value[0].id) : ''
   }
+  if (!backupKeys.value.some((key) => String(key.id) === backupKeyId.value)) backupKeyId.value = ''
 }
 
 async function loadUserGroupRates() {
@@ -806,9 +995,55 @@ async function loadRecords() {
     : ''
 }
 
+function localRecordStorageKey(): string {
+  try {
+    const user = JSON.parse(globalThis.localStorage?.getItem('auth_user') || '{}') as { id?: unknown }
+    return `${LOCAL_RECORD_STORAGE_PREFIX}:${String(user.id || 'anonymous')}`
+  } catch {
+    return `${LOCAL_RECORD_STORAGE_PREFIX}:anonymous`
+  }
+}
+
+function pruneLocalRecords(recordsToPrune: CreatorLocalRecord[], now = Date.now()): CreatorLocalRecord[] {
+  const cutoff = now - GENERATION_RECORD_RETENTION_MS
+  return recordsToPrune
+    .filter((record) => {
+      const createdAt = Date.parse(record.createdAt || '')
+      return Number.isFinite(createdAt) && createdAt >= cutoff
+    })
+    .sort((left, right) => Date.parse(right.createdAt || '') - Date.parse(left.createdAt || ''))
+    .slice(0, 10)
+}
+
+function persistLocalRecords(): void {
+  try {
+    globalThis.localStorage?.setItem(localRecordStorageKey(), JSON.stringify(localRecords.value))
+  } catch {
+    // 浏览器禁用本地存储时保留本次页面内记录。
+  }
+}
+
+function loadLocalRecords(): void {
+  try {
+    const value = JSON.parse(globalThis.localStorage?.getItem(localRecordStorageKey()) || '[]')
+    localRecords.value = pruneLocalRecords(Array.isArray(value) ? value : [])
+  } catch {
+    localRecords.value = []
+  }
+  persistLocalRecords()
+}
+
+function cleanupLocalRecords(): void {
+  const next = pruneLocalRecords(localRecords.value)
+  if (next.length === localRecords.value.length && next.every((record, index) => record.id === localRecords.value[index]?.id)) return
+  localRecords.value = next
+  persistLocalRecords()
+}
+
 function addLocalRecord(record: Omit<CreatorLocalRecord, 'id'>) {
   const createdAt = new Date().toISOString()
-  localRecords.value = [{ ...record, createdAt, id: `local-${Date.now()}` }, ...localRecords.value].slice(0, 20)
+  localRecords.value = pruneLocalRecords([{ ...record, createdAt, id: `local-${Date.now()}` }, ...localRecords.value])
+  persistLocalRecords()
 }
 
 async function submitProductCopy(apiKey: string, signal: AbortSignal, task: CreatorTaskContext) {
@@ -830,11 +1065,12 @@ async function submitProductCopy(apiKey: string, signal: AbortSignal, task: Crea
 }
 
 async function submitImage(apiKey: string, signal: AbortSignal, task: CreatorTaskContext) {
+  const submittedSize = imageSize.value
   const request = {
     apiKey,
     model: selectedModel.value,
     prompt: buildImagePrompt(prompt.value),
-    size: imageSize.value,
+    size: submittedSize,
     quality: imageQuality.value,
     count: 1,
     outputFormat: 'png',
@@ -844,7 +1080,7 @@ async function submitImage(apiKey: string, signal: AbortSignal, task: CreatorTas
   }
   const response = await imageGenerationAPI.generateImage(request)
   if (!isTaskCurrent(task)) return
-  task.state.output = imageOutputFromResponse(response)
+  task.state.output = imageOutputFromResponse(response, submittedSize)
   task.state.status = '图片已生成'
 }
 
@@ -857,13 +1093,15 @@ async function submitEdit(apiKey: string, signal: AbortSignal, task: CreatorTask
   const submittedRatio = outpaintRatio.value
   if (!sourceFile) throw new Error('请先上传图片')
   let sourceImage = sourceFile
+  let mask: File | undefined
   let requestedSize = submittedSize
   let editPrompt = submittedPrompt
   if (task.toolId === 'outpaint') {
-    const expanded = await createOutpaintImage(sourceImage, submittedDirection, submittedRatio)
+    const expanded = await createDirectionalOutpaintFiles(sourceImage, submittedDirection, submittedRatio)
     if (!isTaskCurrent(task)) return
-    sourceImage = expanded.file
-    requestedSize = expanded.size
+    sourceImage = expanded.image
+    mask = expanded.mask
+    requestedSize = `${expanded.width}x${expanded.height}`
     const directionLabel = outpaintDirectionOptions.find((option) => option.id === submittedDirection)?.label || '四周'
     editPrompt = `扩展原图画布，严格保持原图已有区域的主体、构图、文字、色彩和细节不变，仅自然补全透明扩展区域。扩图方向：${directionLabel}；补充要求：${submittedPrompt || '延续原有场景、光影和透视'}`
   }
@@ -876,11 +1114,12 @@ async function submitEdit(apiKey: string, signal: AbortSignal, task: CreatorTask
     count: 1,
     outputFormat: 'png',
     image: sourceImage,
+    mask,
     creatorTool: task.toolId,
     signal,
   })
   if (!isTaskCurrent(task)) return
-  task.state.output = imageOutputFromResponse(response)
+  task.state.output = imageOutputFromResponse(response, requestedSize)
   task.state.status = task.toolId === 'outpaint' ? '图片扩展完成' : '图片编辑完成'
 }
 
@@ -914,8 +1153,8 @@ async function submitBatch(apiKey: string, task: CreatorTaskContext, signal: Abo
     const job = await batchImageAPI.submitBatchImageJob(apiKey, {
       model: taskModel,
       task_name: idempotencyKey,
-      image_size: taskImageSize === '1024x1024' ? '1K' : '2K',
-      aspect_ratio: '1:1',
+      image_size: imageSizeTier(taskImageSize),
+      aspect_ratio: imageAspectRatio(taskImageSize),
       items,
       metadata: { source: 'online-creator', tool: toolId },
     }, idempotencyKey)
@@ -983,7 +1222,7 @@ async function fallbackBatchWithImageEdits(
         signal,
       })
       if (!isTaskCurrent(task)) return
-      const result = imageOutputFromResponse(response)
+      const result = imageOutputFromResponse(response, taskImageSize)
       lines.push(`第 ${index + 1} 张：成功`)
       outputItems.push({ id: `fallback-${index + 1}`, label: file.name, status: 'completed', url: result.url, filename: `${toolId === 'batch-clone' ? 'clone' : 'main'}-${index + 1}.png` })
     } catch (itemError) {
@@ -1031,7 +1270,8 @@ async function pollBatchStatus(apiKey: string, batchId: string, task: CreatorTas
       task.state.status = job.status === 'completed' ? '批量任务已完成' : `批量任务已结束：${job.status}`
       if (job.status === 'completed') await loadBatchItems(apiKey, batchId, task)
       task.state.running = false
-      await loadRecords()
+      if (job.status === 'completed') finishTaskTiming(task)
+      notifyCreatorRecordsChanged()
       return
     }
     task.state.status = `批量任务处理中：${job.status}`
@@ -1067,7 +1307,7 @@ async function loadBatchItems(apiKey: string, batchId: string, task: CreatorTask
     if (item.status === 'completed' && item.image_count > 0) {
       const blob = await batchImageAPI.getBatchImageItemContent(apiKey, batchId, item.custom_id, 0)
       if (!isTaskCurrent(task)) return result
-      result.url = createTrackedObjectURL(blob)
+      result.url = createCreatorObjectURL(blob)
       result.filename = `${item.custom_id}.${item.file_extension || 'png'}`
     }
     return result
@@ -1081,13 +1321,16 @@ async function submitWatermark(apiKey: string, task: CreatorTaskContext, signal:
   const mode = watermarkMode.value
   const submittedText = watermarkText.value
   const submittedLogo = logoFile.value
+  const submittedPrompt = prompt.value
+  const submittedSize = imageSize.value
+  const submittedModel = selectedModel.value
   if (!sourceFile) throw new Error('请先上传图片')
   if (mode === 'remove') {
     const response = await imageGenerationAPI.editImage({
       apiKey,
-      model: selectedModel.value,
-      prompt: `去除图片中的水印、遮挡或不需要文字，尽量自然补全背景。位置说明：${prompt.value}`,
-      size: imageSize.value,
+      model: submittedModel,
+      prompt: `去除图片中的水印、遮挡或不需要文字，尽量自然补全背景。位置说明：${submittedPrompt}`,
+      size: submittedSize,
       quality: 'high',
       count: 1,
       outputFormat: 'png',
@@ -1096,7 +1339,7 @@ async function submitWatermark(apiKey: string, task: CreatorTaskContext, signal:
       signal,
     })
     if (!isTaskCurrent(task)) return
-    task.state.output = imageOutputFromResponse(response)
+    task.state.output = imageOutputFromResponse(response, submittedSize)
     task.state.status = '水印去除完成'
     return
   }
@@ -1104,8 +1347,8 @@ async function submitWatermark(apiKey: string, task: CreatorTaskContext, signal:
     ? await renderTextWatermark(sourceFile, submittedText)
     : await renderLogoWatermark(sourceFile, submittedLogo)
   if (!isTaskCurrent(task)) return
-  const url = createTrackedObjectURL(blob)
-  task.state.output = { type: 'image', url, content: '水印图片已生成' }
+  const url = createCreatorObjectURL(blob)
+  task.state.output = { type: 'image', url, content: '水印图片已生成', size: submittedSize }
   task.state.status = '水印已添加，可直接下载'
 }
 
@@ -1113,6 +1356,13 @@ async function submitVideo(apiKey: string, task: CreatorTaskContext) {
   const model = selectedModel.value
   const submittedPrompt = prompt.value
   const submittedDuration = videoDuration.value
+  const submittedSize = videoSize.value
+  const submittedQuality = videoQuality.value as '480p' | '720p' | '1080p'
+  const submittedReference = videoReferenceFile.value
+  const [width, height] = submittedSize.split('x').map(Number)
+  const referenceImage = submittedReference
+    ? `data:${submittedReference.type || 'image/png'};base64,${await fileToBase64(submittedReference)}`
+    : undefined
   const provider: GatewayVideoProvider = model === AGNES_VIDEO_MODEL || model.toLowerCase().includes('agnes') ? 'agnes' : 'grok'
   const data = await videoGenerationAPI.generateVideo({
     apiKey,
@@ -1120,19 +1370,21 @@ async function submitVideo(apiKey: string, task: CreatorTaskContext) {
     prompt: submittedPrompt,
     model,
     duration: submittedDuration,
-    aspectRatio: '16:9',
-    size: '1280x720',
-    width: 1280,
-    height: 720,
+    size: submittedSize,
+    width,
+    height,
+    quality: submittedQuality,
+    referenceImage,
     creatorTool: task.toolId,
   })
   if (!isTaskCurrent(task)) return
   const videoUrl = data.video?.url || data.url
   const requestId = data.request_id || data.id
   if (requestId) videoTasks.set(requestId, { apiKey, provider, model })
-  task.state.output = { type: 'video', url: videoUrl, videoRequestId: requestId, content: `视频任务已提交：${requestId || '未返回任务 ID'}` }
+  task.state.output = { type: 'video', url: videoUrl, videoRequestId: requestId, content: `视频任务已提交：${requestId || '未返回任务 ID'}`, size: submittedSize }
   if (videoUrl || ['completed', 'succeeded', 'success', 'done'].includes(String(data.status || '').toLowerCase())) {
     task.state.status = '视频已生成'
+    finishTaskTiming(task)
     return
   }
   if (!requestId) throw new Error('视频接口未返回任务 ID')
@@ -1164,18 +1416,19 @@ async function pollVideoStatus(apiKey: string, requestId: string, provider: Gate
     if (!isTaskCurrent(task)) return
     const status = String(data.status || 'processing').toLowerCase()
     const videoUrl = data.video?.url || data.url
-    task.state.output = { type: 'video', url: videoUrl, videoRequestId: requestId, content: `视频任务 ${requestId}：${status}` }
+    task.state.output = { type: 'video', url: videoUrl, videoRequestId: requestId, content: `视频任务 ${requestId}：${status}`, size: task.state.output?.size }
     if (['completed', 'succeeded', 'success', 'done'].includes(status)) {
       task.state.status = '视频已生成'
       task.state.running = false
-      await loadRecords()
+      finishTaskTiming(task)
+      notifyCreatorRecordsChanged()
       return
     }
     if (['failed', 'cancelled', 'canceled', 'error', 'expired'].includes(status)) {
       task.state.error = extractErrorMessage(data.error, '视频生成失败')
       task.state.status = ''
       task.state.running = false
-      await loadRecords()
+      notifyCreatorRecordsChanged()
       return
     }
     task.state.status = `视频生成中：${status}`
@@ -1200,12 +1453,17 @@ async function pollVideoStatus(apiKey: string, requestId: string, provider: Gate
 }
 
 async function handleSubmit() {
-  if (!canSubmit.value || !selectedApiKey.value || !isWorkTool(activeTool.value)) return
+  if (!canSubmit.value || !submissionApiKey.value || !isWorkTool(activeTool.value)) return
   const toolId = activeTool.value
+  const fullRecordCount = toolId === 'product-copy' ? localRecords.value.length : records.value.length
+  if (fullRecordCount >= 10 && !window.confirm('生成记录已满 10 条，继续创作将删除时间最早的一条记录。是否继续？')) return
+  const recordToReplace = fullRecordCount >= 10 && (toolId === 'batch-main' || toolId === 'batch-clone')
+    ? records.value[records.value.length - 1] || null
+    : null
   const state = taskStates[toolId]
   const version = ++state.version
   const task: CreatorTaskContext = { toolId, state, version }
-  const apiKey = selectedApiKey.value.key
+  const apiKey = submissionApiKey.value.key
   const controller = new AbortController()
   state.controller = controller
   let timedOut = false
@@ -1217,16 +1475,30 @@ async function handleSubmit() {
   state.loading = true
   state.running = false
   state.error = ''
-  state.status = '正在请求网关'
+  state.status = '正在创作中'
   state.output = null
+  state.startedAt = Date.now()
+  state.timingKey = selectedModel.value
+  state.estimateSeconds = estimateCreatorDuration(toolId, selectedModel.value)
   try {
     if (toolId === 'product-copy') await submitProductCopy(apiKey, controller.signal, task)
     else if (toolId === 'image') await submitImage(apiKey, controller.signal, task)
     else if (toolId === 'edit' || toolId === 'outpaint') await submitEdit(apiKey, controller.signal, task)
-    else if (toolId === 'batch-main' || toolId === 'batch-clone') await submitBatch(apiKey, task, controller.signal)
+    else if (toolId === 'batch-main' || toolId === 'batch-clone') {
+      await submitBatch(apiKey, task, controller.signal)
+      const submittedBatchId = (task.state.output as CreatorOutput | null)?.batchId
+      if (recordToReplace && isTaskCurrent(task) && submittedBatchId) {
+        try {
+          await removeBackendRecord(recordToReplace)
+        } catch (error) {
+          recordLoadError.value = extractErrorMessage(error, '最早的生成记录清理失败，请稍后手动删除')
+        }
+      }
+    }
     else if (toolId === 'watermark') await submitWatermark(apiKey, task, controller.signal)
     else if (toolId === 'video') await submitVideo(apiKey, task)
-    if (isTaskCurrent(task)) await loadRecords()
+    if (isTaskCurrent(task) && !state.running) finishTaskTiming(task)
+    if (isTaskCurrent(task)) notifyCreatorRecordsChanged()
   } catch (error) {
     if (!isTaskCurrent(task)) return
     state.error = timedOut
@@ -1234,6 +1506,7 @@ async function handleSubmit() {
       : extractErrorMessage(error, '创作失败，请检查密钥、模型或参数')
     state.status = ''
     state.running = false
+    state.startedAt = 0
   } finally {
     window.clearTimeout(timeoutId)
     if (state.controller === controller) state.controller = null
@@ -1258,7 +1531,7 @@ async function restoreRecord(record: GenerationRecord) {
     if (record.result?.files?.length) {
       const blob = await generationRecordsAPI.content(record.task_id, 0)
       if (version !== restoreRequestVersion) return
-      url = createTrackedObjectURL(blob)
+      url = createCreatorObjectURL(blob)
     } else url = record.result?.urls?.[0]
     if (version !== restoreRequestVersion) return
     if (url && record.media_type === 'image') state.output = { type: 'image', url, content: record.prompt_preview || '已从创作记录恢复图片' }
@@ -1315,6 +1588,37 @@ function restoreLocalRecord(record: CreatorLocalRecord) {
   state.error = ''
 }
 
+async function deleteBackendRecord(record: GenerationRecord): Promise<void> {
+  if (!window.confirm('确定删除这条生成记录吗？删除后无法恢复。')) return
+  recordLoadError.value = ''
+  try {
+    await removeBackendRecord(record)
+  } catch (error) {
+    recordLoadError.value = extractErrorMessage(error, '生成记录删除失败')
+  }
+}
+
+async function removeBackendRecord(record: GenerationRecord): Promise<void> {
+  const batchContext = batchRecordContexts.get(record.task_id)
+  if (batchContext) {
+    await batchImageAPI.deleteBatchImageJobRecord(batchContext.apiKey, record.task_id)
+    batchRecordContexts.delete(record.task_id)
+    batchAPIKeys.delete(record.task_id)
+  } else {
+    await generationRecordsAPI.delete(record.task_id)
+  }
+  records.value = records.value.filter((item) => item.task_id !== record.task_id)
+  for (const state of Object.values(taskStates)) {
+    if (state.output?.batchId === record.task_id || state.output?.videoRequestId === record.task_id) state.output = null
+  }
+}
+
+function deleteLocalRecord(record: CreatorLocalRecord): void {
+  if (!window.confirm('确定删除这条文案记录吗？删除后无法恢复。')) return
+  localRecords.value = localRecords.value.filter((item) => item.id !== record.id)
+  persistLocalRecords()
+}
+
 async function copyText(content: string) {
   const state = activeTaskState.value
   await navigator.clipboard?.writeText(content)
@@ -1348,65 +1652,26 @@ async function downloadVideo(requestId: string) {
   }
 }
 
-function createTrackedObjectURL(blob: Blob): string {
-  const url = URL.createObjectURL(blob)
-  objectUrls.add(url)
-  return url
-}
-
-function releaseObjectUrls() {
-  for (const url of objectUrls) URL.revokeObjectURL(url)
-  objectUrls.clear()
-}
-
-function clearPollingTimers() {
-  for (const timer of videoPollTimers.values()) window.clearTimeout(timer)
-  for (const timer of batchPollTimers.values()) window.clearTimeout(timer)
-  videoPollTimers.clear()
-  batchPollTimers.clear()
-}
-
-async function createOutpaintImage(
+async function createDirectionalOutpaintFiles(
   file: File,
   direction: (typeof outpaintDirectionOptions)[number]['id'],
   ratio: number,
-): Promise<{ file: File; size: string }> {
+): Promise<Awaited<ReturnType<typeof createOutpaintFiles>>> {
+  const safeRatio = Math.min(1, Math.max(0.25, Number(ratio) || 0.5))
+  if (direction === 'all') {
+    return createOutpaintFiles(file, { mode: 'scale', scale: 1 + safeRatio })
+  }
+
   const image = await loadImageElement(file)
   const sourceWidth = image.naturalWidth || image.width
   const sourceHeight = image.naturalHeight || image.height
-  const safeRatio = Math.min(1, Math.max(0.25, Number(ratio) || 0.5))
-  let left = 0
-  let right = 0
-  let top = 0
-  let bottom = 0
-  if (direction === 'all') {
-    left = right = Math.round(sourceWidth * safeRatio / 2)
-    top = bottom = Math.round(sourceHeight * safeRatio / 2)
-  } else if (direction === 'left') left = Math.round(sourceWidth * safeRatio)
-  else if (direction === 'right') right = Math.round(sourceWidth * safeRatio)
-  else if (direction === 'top') top = Math.round(sourceHeight * safeRatio)
-  else bottom = Math.round(sourceHeight * safeRatio)
-
-  const rawWidth = sourceWidth + left + right
-  const rawHeight = sourceHeight + top + bottom
-  const scale = Math.min(1, 2048 / Math.max(rawWidth, rawHeight))
-  const canvas = document.createElement('canvas')
-  canvas.width = Math.max(1, Math.round(rawWidth * scale))
-  canvas.height = Math.max(1, Math.round(rawHeight * scale))
-  const ctx = canvas.getContext('2d')
-  if (!ctx) throw new Error('当前浏览器不支持扩图画布')
-  ctx.clearRect(0, 0, canvas.width, canvas.height)
-  ctx.drawImage(
-    image,
-    Math.round(left * scale),
-    Math.round(top * scale),
-    Math.round(sourceWidth * scale),
-    Math.round(sourceHeight * scale),
-  )
-  const blob = await canvasToBlob(canvas)
-  const aspectRatio = canvas.width / canvas.height
-  const size = aspectRatio > 1.15 ? '1536x1024' : aspectRatio < 0.87 ? '1024x1536' : '1024x1024'
-  return { file: new File([blob], 'outpaint-source.png', { type: 'image/png' }), size }
+  return createOutpaintFiles(file, {
+    mode: 'free',
+    top: direction === 'top' ? Math.round(sourceHeight * safeRatio) : 0,
+    right: direction === 'right' ? Math.round(sourceWidth * safeRatio) : 0,
+    bottom: direction === 'bottom' ? Math.round(sourceHeight * safeRatio) : 0,
+    left: direction === 'left' ? Math.round(sourceWidth * safeRatio) : 0,
+  })
 }
 
 async function createCloneComposite(referenceFile: File, productFile: File, index: number): Promise<File> {
@@ -1516,7 +1781,14 @@ function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
 }
 
 watch(selectedKeyId, () => {
+  if (backupKeyId.value === selectedKeyId.value) backupKeyId.value = ''
   void loadModelsForSelectedKey()
+})
+watch(backupKeyId, () => {
+  void loadBackupTextModels()
+})
+watch(creatorRecordRevision, () => {
+  void loadRecords()
 })
 watch(() => props.initialTool, (toolId) => selectTool(normalizeCreatorToolId(toolId)))
 watch(activeTool, syncSelectedModel)
@@ -1528,6 +1800,8 @@ watch(selectedModel, (model) => {
 })
 
 onMounted(async () => {
+  loadLocalRecords()
+  localRecordCleanupTimer = window.setInterval(cleanupLocalRecords, 60 * 60 * 1000)
   await Promise.all([loadApiKeys(), loadUserGroupRates()])
   await loadRecords()
 })
@@ -1535,9 +1809,9 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   restoreRequestVersion += 1
   modelRequestVersion += 1
-  cancelAllRequests()
-  clearPollingTimers()
-  releaseObjectUrls()
+  backupModelRequestVersion += 1
+  if (localRecordCleanupTimer) window.clearInterval(localRecordCleanupTimer)
+  localRecordCleanupTimer = 0
 })
 </script>
 
@@ -1772,6 +2046,10 @@ onBeforeUnmount(() => {
   gap: 10px;
 }
 
+.optimize-button {
+  margin-right: auto;
+}
+
 .primary-button,
 .secondary-button {
   display: inline-flex;
@@ -1844,6 +2122,10 @@ onBeforeUnmount(() => {
 
   .prompt-actions {
     flex-direction: column;
+  }
+
+  .optimize-button {
+    margin-right: 0;
   }
 }
 </style>

@@ -58,6 +58,52 @@ func TestBuildGeminiBatchJSONL_WritesValidLinesAndPreservesCustomID(t *testing.T
 	requireJSONLLine(t, lines[1], "cover_002", "Second prompt")
 }
 
+func TestBuildGeminiBatchJSONL_WritesOnlyProvidedImageConfig(t *testing.T) {
+	tests := []struct {
+		name        string
+		aspectRatio string
+		imageSize   string
+		wantAspect  string
+		wantSize    string
+	}{
+		{name: "比例和尺寸", aspectRatio: " 16:9 ", imageSize: " 2K ", wantAspect: "16:9", wantSize: "2K"},
+		{name: "仅比例", aspectRatio: "1:1", wantAspect: "1:1"},
+		{name: "仅尺寸", imageSize: "4K", wantSize: "4K"},
+		{name: "全部为空", aspectRatio: " ", imageSize: " "},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := validGeminiBatchInput()
+			input.AspectRatio = tt.aspectRatio
+			input.ImageSize = tt.imageSize
+
+			jsonl, err := BuildGeminiBatchJSONL(input)
+			require.NoError(t, err)
+
+			var got map[string]any
+			require.NoError(t, json.Unmarshal(bytes.TrimSpace(jsonl), &got))
+			config := got["request"].(map[string]any)["generationConfig"].(map[string]any)
+			require.Equal(t, []any{"TEXT", "IMAGE"}, config["responseModalities"])
+			if tt.wantAspect == "" && tt.wantSize == "" {
+				require.NotContains(t, config, "imageConfig")
+				return
+			}
+			imageConfig := config["imageConfig"].(map[string]any)
+			if tt.wantAspect == "" {
+				require.NotContains(t, imageConfig, "aspectRatio")
+			} else {
+				require.Equal(t, tt.wantAspect, imageConfig["aspectRatio"])
+			}
+			if tt.wantSize == "" {
+				require.NotContains(t, imageConfig, "imageSize")
+			} else {
+				require.Equal(t, tt.wantSize, imageConfig["imageSize"])
+			}
+		})
+	}
+}
+
 func TestBuildGeminiBatchJSONL_RejectsDuplicateCustomIDs(t *testing.T) {
 	input := validGeminiBatchInput()
 	input.Items = append(input.Items, BatchImageInputItem{CustomID: "cover_001", Prompt: "Duplicate"})

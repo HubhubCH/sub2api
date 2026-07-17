@@ -38,6 +38,7 @@ func RegisterUserRoutes(
 			user.GET("/api-keys/:id/usage/daily", h.Usage.GetMyAPIKeyDailyUsage)
 			user.GET("/platform-quotas", h.User.GetMyPlatformQuotas)
 			user.GET("/generation-records", h.OpenAIGateway.ListGenerationRecords)
+			user.DELETE("/generation-records/:task_id", h.OpenAIGateway.DeleteGenerationRecord)
 			user.GET("/generation-records/:task_id/content/:index", h.OpenAIGateway.GenerationRecordContent)
 
 			// 通知邮箱管理

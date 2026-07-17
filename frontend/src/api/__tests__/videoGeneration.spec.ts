@@ -22,6 +22,10 @@ import {
   getVideoStatus,
   listVideoModels,
   normalizeAgnesFrameCount,
+  parseVideoSize,
+  videoAspectRatioForDimensions,
+  videoGenerationModeForReference,
+  videoQualityForDimensions,
   videoModelsForProvider
 } from '@/api/videoGeneration'
 
@@ -85,8 +89,8 @@ describe('videoGeneration gateway contract', () => {
       duration: 6,
       aspectRatio: '3:2',
       size: '1152x768',
-      width: 1152,
-      height: 768,
+      quality: '1080p',
+      mode: 'image-to-video',
       referenceImage: 'data:image/png;base64,AAAA'
     })
 
@@ -96,14 +100,118 @@ describe('videoGeneration gateway contract', () => {
       model: 'agnes-video-v2.0',
       prompt: 'slow tracking shot',
       image: 'data:image/png;base64,AAAA',
-      width: 1152,
-      height: 768,
+      width: 1620,
+      height: 1080,
       num_frames: 145,
       frame_rate: 24
     })
     expect(payload).not.toHaveProperty('duration')
     expect(payload).not.toHaveProperty('aspect_ratio')
+    expect(payload).not.toHaveProperty('quality')
+    expect(payload).not.toHaveProperty('resolution')
     expect(payload).not.toHaveProperty('size')
+    expect(payload).not.toHaveProperty('mode')
+  })
+
+  it.each([
+    { quality: '480p', size: '1280x720', width: 854, height: 480 },
+    { quality: '720p', size: '720x1280', width: 720, height: 1280 },
+    { quality: '1080p', size: '720x720', width: 1080, height: 1080 }
+  ] as const)(
+    'maps Agnes $quality and $size to effective $width x $height dimensions',
+    async ({ quality, size, width, height }) => {
+      gatewayPost.mockResolvedValue({ data: { request_id: 'site-quality-request' } })
+
+      await generateVideo({
+        apiKey: API_KEY,
+        provider: 'agnes',
+        model: 'agnes-video-v2.0',
+        prompt: 'quality-sensitive video',
+        size,
+        quality
+      })
+
+      const [, payload] = gatewayPost.mock.calls[0]
+      expect(payload).toMatchObject({ width, height })
+      expect(payload).not.toHaveProperty('quality')
+      expect(payload).not.toHaveProperty('resolution')
+    }
+  )
+
+  it('keeps explicit Agnes dimensions when no quality is selected', async () => {
+    gatewayPost.mockResolvedValue({ data: { request_id: 'site-explicit-size-request' } })
+
+    await generateVideo({
+      apiKey: API_KEY,
+      provider: 'agnes',
+      model: 'agnes-video-v2.0',
+      prompt: 'explicit dimensions',
+      width: 1000,
+      height: 600
+    })
+
+    const [, payload] = gatewayPost.mock.calls[0]
+    expect(payload).toMatchObject({ width: 1000, height: 600 })
+  })
+
+  it('maps a Grok custom size and quality without sending unsupported dimension fields', async () => {
+    gatewayPost.mockResolvedValue({
+      data: { request_id: 'relay-request-2', provider: 'grok', status: 'queued' }
+    })
+
+    await generateVideo({
+      apiKey: API_KEY,
+      provider: 'grok',
+      model: 'grok-imagine-video',
+      prompt: 'vertical city walk',
+      size: '1080×1920',
+      quality: '1080p',
+      referenceImage: ' https://example.com/reference.png '
+    })
+
+    const [, payload] = gatewayPost.mock.calls[0]
+    expect(payload).toEqual({
+      provider: 'grok',
+      model: 'grok-imagine-video',
+      prompt: 'vertical city walk',
+      aspect_ratio: '9:16',
+      resolution: '1080p',
+      image: { url: 'https://example.com/reference.png' }
+    })
+    expect(payload).not.toHaveProperty('size')
+    expect(payload).not.toHaveProperty('width')
+    expect(payload).not.toHaveProperty('height')
+    expect(payload).not.toHaveProperty('quality')
+  })
+
+  it('omits image fields for text-to-video requests', async () => {
+    gatewayPost.mockResolvedValue({
+      data: { request_id: 'relay-request-3', provider: 'grok', status: 'queued' }
+    })
+
+    await generateVideo({
+      apiKey: API_KEY,
+      provider: 'grok',
+      model: 'grok-imagine-video',
+      prompt: 'clouds moving over a mountain',
+      size: '1280x720',
+      referenceImage: '   '
+    })
+
+    const [, payload] = gatewayPost.mock.calls[0]
+    expect(payload).not.toHaveProperty('image')
+    expect(payload).not.toHaveProperty('images')
+    expect(payload).not.toHaveProperty('reference_images')
+    expect(payload).toMatchObject({ aspect_ratio: '16:9', resolution: '720p' })
+  })
+
+  it('exposes stable helpers for page size, quality and generation mode controls', () => {
+    expect(parseVideoSize(' 1920 × 1080 ')).toEqual({ width: 1920, height: 1080 })
+    expect(parseVideoSize('auto')).toBeNull()
+    expect(videoAspectRatioForDimensions({ width: 1280, height: 720 })).toBe('16:9')
+    expect(videoQualityForDimensions({ width: 1280, height: 720 })).toBe('720p')
+    expect(videoGenerationModeForReference()).toBe('text-to-video')
+    expect(videoGenerationModeForReference('data:image/png;base64,AAAA')).toBe('image-to-video')
   })
 
   it('keeps Agnes frames within the 8n+1 and 441-frame limits', () => {

@@ -97,6 +97,31 @@ describe('创作记录组件', () => {
     wrapper.unmount()
   })
 
+  it('历史记录提供独立删除按钮且不会触发恢复', async () => {
+    const backendRecord = createRecord()
+    const localRecord = {
+      id: 'local-1',
+      toolId: 'product-copy' as const,
+      title: '商品文案',
+      kind: '商品文案',
+      preview: '预览',
+      content: '正文',
+      outputType: 'text' as const,
+      createdAt: new Date().toISOString(),
+    }
+    const wrapper = mount(CreatorHistoryPanel, {
+      props: { backendRecords: [backendRecord], localRecords: [localRecord] },
+    })
+
+    await wrapper.find('[data-test="creator-delete-backend-record"]').trigger('click')
+    await wrapper.find('[data-test="creator-delete-local-record"]').trigger('click')
+
+    expect(wrapper.emitted('deleteBackend')?.[0]).toEqual([backendRecord])
+    expect(wrapper.emitted('deleteLocal')?.[0]).toEqual([localRecord])
+    expect(wrapper.emitted('restoreBackend')).toBeUndefined()
+    expect(wrapper.emitted('restoreLocal')).toBeUndefined()
+  })
+
   it('直链图片失败时只回退鉴权文件一次', async () => {
     getRecordContent.mockResolvedValue(new Blob(['broken'], { type: 'image/png' }))
     const wrapper = mount(CreatorHistoryPanel, {

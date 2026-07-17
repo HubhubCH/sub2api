@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -247,6 +249,23 @@ func (h *OpenAIGatewayHandler) ListGenerationRecords(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": records})
+}
+
+func (h *OpenAIGatewayHandler) DeleteGenerationRecord(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "未登录"})
+		return
+	}
+	if err := h.generationRecordService.Delete(c.Request.Context(), subject.UserID, c.Param("task_id")); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "生成记录不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除生成记录失败"})
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 func (h *OpenAIGatewayHandler) GenerationRecordContent(c *gin.Context) {

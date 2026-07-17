@@ -3,10 +3,17 @@
     <section class="result-section result-main">
       <div class="section-heading">
         <h2>创作结果</h2>
-        <span v-if="status">{{ status }}</span>
+        <span v-if="loading || status">{{ loading ? '正在创作中' : status }}</span>
       </div>
-      <div v-if="loading" class="result-empty">正在请求网关...</div>
+      <div v-if="loading && !output" class="result-creating" :class="{ 'has-canvas': canvasSize }" :style="canvasStyle">
+        <strong>正在创作中</strong>
+        <span>预计等待时间 {{ estimateSeconds || 1 }} 秒</span>
+        <small v-if="canvasLabel">{{ canvasLabel }}</small>
+      </div>
       <div v-else-if="error" class="result-error">{{ error }}</div>
+      <div v-else-if="!output && canvasSize" class="canvas-preview" :style="canvasStyle">
+        <span>{{ canvasLabel }}</span>
+      </div>
       <div v-else-if="!output" class="result-empty">提交后结果会显示在这里。</div>
       <div v-else-if="output.type === 'text'" class="text-output">
         <button type="button" data-test="creator-copy-result" class="copy-button" @click="$emit('copy', output.content)">
@@ -15,20 +22,24 @@
         {{ output.content }}
       </div>
       <div v-else-if="output.type === 'image' && output.url" class="media-output">
-        <button
-          type="button"
-          data-test="creator-image-preview"
-          class="image-preview-button"
-          aria-label="放大预览创作结果"
-          @click="openImagePreview(output.url, '创作结果', 'creator-image.png')"
-        >
-          <img class="image-output" :src="output.url" alt="创作结果" />
-          <span class="preview-indicator" aria-hidden="true"><Icon name="eye" size="sm" /></span>
-        </button>
+        <div class="result-canvas" :style="outputCanvasStyle">
+          <button
+            type="button"
+            data-test="creator-image-preview"
+            class="image-preview-button"
+            aria-label="放大预览创作结果"
+            @click="openImagePreview(output.url, '创作结果', 'creator-image.png')"
+          >
+            <img class="image-output" :src="output.url" alt="创作结果" />
+            <span class="preview-indicator" aria-hidden="true"><Icon name="eye" size="sm" /></span>
+          </button>
+        </div>
         <a class="download-link" :href="output.url" download="creator-image.png">下载图片</a>
       </div>
       <div v-else-if="output.type === 'video'" class="media-output">
-        <video v-if="output.url" class="video-output" :src="output.url" controls playsinline />
+        <div v-if="output.url" class="result-canvas" :style="outputCanvasStyle">
+          <video class="video-output" :src="output.url" controls playsinline />
+        </div>
         <div v-else class="media-placeholder">{{ output.content }}</div>
         <button
           v-if="output.videoRequestId"
@@ -144,6 +155,7 @@ export interface CreatorOutput {
   batchId?: string
   batchReady?: boolean
   videoRequestId?: string
+  size?: string
   items?: Array<{
     id: string
     label: string
@@ -162,8 +174,12 @@ const props = withDefaults(defineProps<{
   loading: boolean
   error: string
   status: string
+  canvasSize?: string
+  estimateSeconds?: number
 }>(), {
   localRecords: () => [],
+  canvasSize: '',
+  estimateSeconds: 0,
 })
 
 defineEmits<{
@@ -180,6 +196,19 @@ const recentLocalRecords = computed(() => props.localRecords.slice(0, 3))
 const recentRecords = computed(() => props.records.slice(0, Math.max(0, 3 - recentLocalRecords.value.length)))
 const totalRecordCount = computed(() => props.localRecords.length + props.records.length)
 const previewImage = reactive({ src: '', alt: '', downloadName: 'creator-image.png' })
+const canvasLabel = computed(() => formatCanvasLabel(props.canvasSize))
+const canvasStyle = computed(() => canvasStyleForSize(props.canvasSize))
+const outputCanvasStyle = computed(() => canvasStyleForSize(props.output?.size || props.canvasSize))
+
+function formatCanvasLabel(size?: string): string {
+  const match = /^(\d+)x(\d+)$/.exec(size || '')
+  return match ? `${match[1]} x ${match[2]}` : ''
+}
+
+function canvasStyleForSize(size?: string): Record<string, string> {
+  const match = /^(\d+)x(\d+)$/.exec(size || '')
+  return match ? { '--creator-canvas-ratio': `${match[1]} / ${match[2]}` } : {}
+}
 
 function openImagePreview(src: string, alt: string, downloadName: string): void {
   previewImage.src = src
@@ -342,6 +371,45 @@ function formatTime(value?: string): string {
   white-space: pre-wrap;
 }
 
+.result-creating,
+.canvas-preview {
+  display: grid;
+  width: min(100%, 860px);
+  max-height: calc(100dvh - 260px);
+  min-height: 220px;
+  place-content: center;
+  align-self: center;
+  gap: 7px;
+  margin: auto;
+  color: #475569;
+  text-align: center;
+}
+
+.result-creating.has-canvas,
+.canvas-preview {
+  aspect-ratio: var(--creator-canvas-ratio, 1 / 1);
+  border: 1px dashed #cbd5e1;
+  background: #f8fafc;
+}
+
+.result-creating strong {
+  color: #0f766e;
+  font-size: 20px;
+  font-weight: 780;
+}
+
+.result-creating > span {
+  color: #475569;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.result-creating small,
+.canvas-preview span {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
 .result-empty.compact {
   min-height: auto;
 }
@@ -375,6 +443,16 @@ function formatTime(value?: string): string {
   padding-bottom: 14px;
 }
 
+.result-canvas {
+  display: grid;
+  width: 100%;
+  max-height: min(560px, calc(100dvh - 260px));
+  aspect-ratio: var(--creator-canvas-ratio, auto);
+  place-items: center;
+  overflow: hidden;
+  background: #f8fafc;
+}
+
 .image-preview-button,
 .batch-preview-button {
   position: relative;
@@ -385,6 +463,10 @@ function formatTime(value?: string): string {
   background: transparent;
   cursor: zoom-in;
   padding: 0;
+}
+
+.result-canvas .image-preview-button {
+  height: 100%;
 }
 
 .image-preview-button:focus-visible,
@@ -508,7 +590,8 @@ function formatTime(value?: string): string {
 .video-output {
   display: block;
   width: 100%;
-  max-height: min(520px, calc(100dvh - 300px));
+  height: 100%;
+  max-height: min(560px, calc(100dvh - 260px));
   background: #f8fafc;
   object-fit: contain;
 }
@@ -618,6 +701,13 @@ function formatTime(value?: string): string {
 :global(.dark) .record-item p,
 :global(.dark) .record-item time {
   color: #94a3b8;
+}
+
+:global(.dark) .result-creating.has-canvas,
+:global(.dark) .canvas-preview,
+:global(.dark) .result-canvas {
+  border-color: #475569;
+  background: #0f172a;
 }
 
 :global(.dark) .record-item:hover {

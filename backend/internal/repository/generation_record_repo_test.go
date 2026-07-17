@@ -2,6 +2,8 @@ package repository
 
 import (
 	"context"
+	"database/sql"
+	"os"
 	"testing"
 	"time"
 
@@ -49,6 +51,51 @@ func TestGenerationRecordTaskExistsChecksCurrentDatabaseState(t *testing.T) {
 
 	require.NoError(t, err)
 	require.True(t, exists)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestGenerationRecordDeleteByUser(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	repo := NewGenerationRecordRepository(db)
+	mock.ExpectQuery("DELETE FROM generation_records WHERE user_id=\\$1 AND task_id=\\$2 RETURNING task_id").
+		WithArgs(int64(7), "gen_owned").
+		WillReturnRows(sqlmock.NewRows([]string{"task_id"}).AddRow("gen_owned"))
+
+	err = repo.Delete(context.Background(), 7, "gen_owned")
+
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestGenerationRecordDeleteHidesOtherUsersRecord(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	repo := NewGenerationRecordRepository(db)
+	mock.ExpectQuery("DELETE FROM generation_records WHERE user_id=\\$1 AND task_id=\\$2 RETURNING task_id").
+		WithArgs(int64(7), "gen_other").
+		WillReturnError(sql.ErrNoRows)
+
+	err = repo.Delete(context.Background(), 7, "gen_other")
+
+	require.ErrorIs(t, err, os.ErrNotExist)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestGenerationRecordDeleteReturnsDatabaseError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	repo := NewGenerationRecordRepository(db)
+	mock.ExpectQuery("DELETE FROM generation_records WHERE user_id=\\$1 AND task_id=\\$2 RETURNING task_id").
+		WithArgs(int64(7), "gen_failed").
+		WillReturnError(sql.ErrConnDone)
+
+	err = repo.Delete(context.Background(), 7, "gen_failed")
+
+	require.ErrorIs(t, err, sql.ErrConnDone)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

@@ -147,9 +147,9 @@ func (h *OpenAIGatewayHandler) handleVideoProviderSubmissionRequest(
 	setOpsEndpointContext(c, "", int16(service.RequestTypeSync))
 
 	if len(requestInfo.ModerationBody) > 0 {
-		decision := h.checkContentModeration(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIImages, requestModel, requestInfo.ModerationBody)
-		if decision != nil && decision.Blocked {
-			h.errorResponse(c, contentModerationStatus(decision), contentModerationErrorCode(decision), decision.Message)
+		decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIImages, requestModel, requestInfo.ModerationBody)
+		if decision != nil && !decision.AllowNextStage {
+			h.openAISecurityAuditError(c, decision)
 			return
 		}
 	}

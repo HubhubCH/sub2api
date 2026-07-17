@@ -174,6 +174,15 @@ func (r *generationRecordRepository) GetByUpstream(ctx context.Context, userID, 
 	return record, err
 }
 
+func (r *generationRecordRepository) Delete(ctx context.Context, userID int64, taskID string) error {
+	var deletedTaskID string
+	err := r.db.QueryRowContext(ctx, `DELETE FROM generation_records WHERE user_id=$1 AND task_id=$2 RETURNING task_id`, userID, taskID).Scan(&deletedTaskID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return os.ErrNotExist
+	}
+	return err
+}
+
 func (r *generationRecordRepository) TaskExists(ctx context.Context, taskID string) (bool, error) {
 	var exists bool
 	err := r.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM generation_records WHERE task_id=$1)`, taskID).Scan(&exists)
