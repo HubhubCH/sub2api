@@ -27,7 +27,17 @@ export interface OutpaintRatioOptions extends OutpaintBaseOptions {
   ratio: string
 }
 
-export type OutpaintOptions = OutpaintScaleOptions | OutpaintFreeOptions | OutpaintRatioOptions
+export type OutpaintDirection = 'all' | 'left' | 'right' | 'top' | 'bottom'
+
+export interface OutpaintTargetOptions extends OutpaintBaseOptions {
+  mode: 'target'
+  width: number
+  height: number
+  direction: OutpaintDirection
+  expansionRatio: number
+}
+
+export type OutpaintOptions = OutpaintScaleOptions | OutpaintFreeOptions | OutpaintRatioOptions | OutpaintTargetOptions
 
 export interface OutpaintLayout {
   width: number
@@ -71,6 +81,31 @@ export function calculateOutpaintLayout(
 ): OutpaintLayout {
   if (sourceWidth <= 0 || sourceHeight <= 0) throw new Error('无法读取扩图原图尺寸')
   const maxEdge = alignTo16(Math.max(256, Number(options.maxEdge) || 2048))
+
+  if (options.mode === 'target') {
+    const width = Math.round(Number(options.width))
+    const height = Math.round(Number(options.height))
+    if (width <= 0 || height <= 0) throw new Error('扩图目标画布尺寸无效')
+    const expansionRatio = Math.min(1, Math.max(0.25, Number(options.expansionRatio) || 0.5))
+    const horizontal = options.direction === 'left' || options.direction === 'right'
+    const vertical = options.direction === 'top' || options.direction === 'bottom'
+    const availableWidth = horizontal || options.direction === 'all' ? width / (1 + expansionRatio) : width
+    const availableHeight = vertical || options.direction === 'all' ? height / (1 + expansionRatio) : height
+    const drawScale = Math.min(availableWidth / sourceWidth, availableHeight / sourceHeight)
+    const drawWidth = Math.max(1, Math.min(width, Math.round(sourceWidth * drawScale)))
+    const drawHeight = Math.max(1, Math.min(height, Math.round(sourceHeight * drawScale)))
+    const drawX = options.direction === 'left'
+      ? width - drawWidth
+      : options.direction === 'right'
+        ? 0
+        : Math.round((width - drawWidth) / 2)
+    const drawY = options.direction === 'top'
+      ? height - drawHeight
+      : options.direction === 'bottom'
+        ? 0
+        : Math.round((height - drawHeight) / 2)
+    return { width, height, drawX, drawY, drawWidth, drawHeight }
+  }
 
   if (options.mode === 'ratio') {
     const ratio = parseRatio(options.ratio)

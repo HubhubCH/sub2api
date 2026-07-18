@@ -51,6 +51,7 @@ describe('imageGeneration API transport', () => {
         'data: [DONE]',
       ])
     )
+    stubImageCanvas(1280, 720)
 
     const result = await generateImage({
       apiKey: API_KEY,
@@ -335,6 +336,108 @@ describe('imageGeneration API transport', () => {
     expect(body.get('input_fidelity')).toBe('high')
     expect(body.get('image')).toBe(image)
     expect(body.get('mask')).toBe(mask)
+  })
+
+  it('扩图结果与目标画布尺寸不一致时校正为精确尺寸', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ b64_json: 'c291cmNlLWltYWdl', output_format: 'png' }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    )
+    const { canvas, decodedImage, drawImage } = stubImageCanvas(1024, 1536, 'outpaint-exact-size')
+
+    const result = await editImage({
+      apiKey: API_KEY,
+      model: 'gpt-image-2',
+      prompt: '向右扩展图片',
+      size: '1536x1152',
+      quality: 'high',
+      count: 1,
+      outputFormat: 'png',
+      image: new File(['image-bytes'], 'outpaint-source.png', { type: 'image/png' }),
+      mask: new File(['mask-bytes'], 'outpaint-mask.png', { type: 'image/png' }),
+      creatorTool: 'outpaint',
+    })
+
+    expect(canvas.width).toBe(1536)
+    expect(canvas.height).toBe(1152)
+    expect(drawImage).toHaveBeenCalledWith(
+      decodedImage,
+      0,
+      384,
+      1024,
+      768,
+      0,
+      0,
+      1536,
+      1152
+    )
+    expect(decodedImage.close).toHaveBeenCalledTimes(1)
+    expect(result.data?.[0]).toEqual(expect.objectContaining({
+      b64_json: globalThis.btoa('outpaint-exact-size'),
+      output_format: 'png',
+      size: '1536x1152',
+    }))
+  })
+
+  it('普通生图结果与所选画布尺寸不一致时校正为精确尺寸', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ b64_json: 'c291cmNlLWltYWdl', output_format: 'png' }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    )
+    const { canvas, decodedImage, drawImage } = stubImageCanvas(768, 1024, 'generated-exact-size')
+
+    const result = await generateImage({
+      apiKey: API_KEY,
+      model: 'gpt-image-2',
+      prompt: '生成方形商品图',
+      size: '1024x1024',
+      quality: 'high',
+      count: 1,
+      outputFormat: 'png',
+      creatorTool: 'image',
+    })
+
+    expect(canvas.width).toBe(1024)
+    expect(canvas.height).toBe(1024)
+    expect(drawImage).toHaveBeenCalledWith(decodedImage, 0, 128, 768, 768, 0, 0, 1024, 1024)
+    expect(result.data?.[0]).toEqual(expect.objectContaining({
+      b64_json: globalThis.btoa('generated-exact-size'),
+      size: '1024x1024',
+    }))
+  })
+
+  it('去水印编辑结果与所选画布尺寸不一致时校正为精确尺寸', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ b64_json: 'c291cmNlLWltYWdl', output_format: 'png' }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    )
+    const { canvas, decodedImage, drawImage } = stubImageCanvas(1024, 1024, 'watermark-exact-size')
+
+    const result = await editImage({
+      apiKey: API_KEY,
+      model: 'gpt-image-2',
+      prompt: '去除水印',
+      size: '1152x1536',
+      quality: 'high',
+      count: 1,
+      outputFormat: 'png',
+      image: new File(['image-bytes'], 'watermark-source.png', { type: 'image/png' }),
+      creatorTool: 'watermark',
+    })
+
+    expect(canvas.width).toBe(1152)
+    expect(canvas.height).toBe(1536)
+    expect(drawImage).toHaveBeenCalledWith(decodedImage, 128, 0, 768, 1024, 0, 0, 1152, 1536)
+    expect(result.data?.[0]).toEqual(expect.objectContaining({
+      b64_json: globalThis.btoa('watermark-exact-size'),
+      size: '1152x1536',
+    }))
   })
 
   it('图片生成请求支持调用方取消信号', async () => {

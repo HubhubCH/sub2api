@@ -831,7 +831,8 @@ async function handleGenerate() {
       size: `${outputWidth}x${outputHeight}`,
       quality: form.quality,
       count: Math.min(4, Math.max(1, Number(form.count) || 1)),
-      outputFormat: form.outputFormat
+      outputFormat: form.outputFormat,
+      creatorTool: isOutpainting ? 'outpaint' : referenceFile.value ? 'edit' : 'image'
     }
     let response
     if (referenceFile.value) {

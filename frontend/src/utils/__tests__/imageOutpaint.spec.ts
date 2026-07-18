@@ -81,5 +81,20 @@ describe('扩图画布预处理', () => {
       drawWidth: 1024,
       drawHeight: 768,
     }))
+
+    expect(calculateOutpaintLayout(768, 1152, {
+      mode: 'target',
+      width: 1536,
+      height: 1152,
+      direction: 'right',
+      expansionRatio: 1,
+    })).toEqual({
+      width: 1536,
+      height: 1152,
+      drawX: 0,
+      drawY: 0,
+      drawWidth: 768,
+      drawHeight: 1152,
+    })
   })
 })

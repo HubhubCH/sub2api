@@ -163,6 +163,8 @@ function installCanvasImageMocks() {
     drawImage,
     clearRect: vi.fn(),
     fillRect: vi.fn(),
+    strokeText: vi.fn(),
+    fillText: vi.fn(),
     imageSmoothingEnabled: true,
     imageSmoothingQuality: 'high',
     fillStyle: '#000000',
@@ -588,7 +590,7 @@ describe('OnlineCreatorView', () => {
 
   it('按图片工具提交真实图片生成载荷', async () => {
     generateImage.mockResolvedValue({
-      data: [{ b64_json: 'aW1hZ2U=', revised_prompt: '修订提示词' }],
+      data: [{ b64_json: 'aW1hZ2U=', revised_prompt: '修订提示词', size: '512x768' }],
     })
     const wrapper = await mountReadyView()
 
@@ -609,6 +611,7 @@ describe('OnlineCreatorView', () => {
       signal: expect.any(Object),
     })
     expect(wrapper.find('img[alt="创作结果"]').attributes('src')).toContain('data:image/png;base64,aW1hZ2U=')
+    expect(wrapper.find('.result-canvas').attributes('style')).toContain('--creator-canvas-ratio: 512 / 768')
   })
 
   it('生图场景、画质、风格、背景和分组费用估算同步到请求', async () => {
@@ -677,7 +680,7 @@ describe('OnlineCreatorView', () => {
   })
 
   it('图片扩图生成透明扩展画布并调用图片编辑', async () => {
-    installCanvasImageMocks()
+    const drawImage = installCanvasImageMocks()
     editImage.mockResolvedValue({ data: [{ b64_json: 'aW1hZ2U=' }] })
     const wrapper = await mountReadyView()
     const file = new File([new Uint8Array([1])], 'poster.png', { type: 'image/png' })
@@ -685,6 +688,7 @@ describe('OnlineCreatorView', () => {
     await wrapper.find('[data-test="creator-tool-outpaint"]').trigger('click')
     await wrapper.find('[data-test="creator-outpaint-right"]').trigger('click')
     await wrapper.find('[data-test="creator-outpaint-ratio"]').setValue('1')
+    await wrapper.find('[data-test="creator-ratio-4-3"]').trigger('click')
     await setInputFiles(wrapper, '#creator-image-file', [file])
     await wrapper.find('[data-test="creator-submit"]').trigger('submit')
     await flushPromises()
@@ -692,7 +696,7 @@ describe('OnlineCreatorView', () => {
     expect(editImage.mock.calls[0][0]).toMatchObject({
       apiKey: 'sk-live',
       model: 'gpt-image-1',
-      size: '208x112',
+      size: '1536x1152',
       creatorTool: 'outpaint',
     })
     expect(editImage.mock.calls[0][0].image.name).toBe('outpaint-source.png')
@@ -700,22 +704,13 @@ describe('OnlineCreatorView', () => {
     expect(editImage.mock.calls[0][0].inputFidelity).toBe('high')
     expect(editImage.mock.calls[0][0].prompt).toContain('仅自然补全透明扩展区域')
     expect(editImage.mock.calls[0][0].prompt).toContain('扩图方向：向右')
+    expect(drawImage).toHaveBeenCalledWith(expect.anything(), 0, 192, 768, 768)
   })
 
   it('扩图预处理期间切换工具仍使用提交时的模型和提示词', async () => {
     installCanvasImageMocks()
-    let finishImageLoad: (() => void) | undefined
-    vi.stubGlobal('Image', class {
-      onload: null | (() => void) = null
-      onerror: null | (() => void) = null
-      naturalWidth = 100
-      naturalHeight = 100
-      width = 100
-      height = 100
-      set src(_value: string) {
-        finishImageLoad = () => this.onload?.()
-      }
-    })
+    const bitmapLoad = deferred<{ width: number; height: number; close: () => void }>()
+    vi.stubGlobal('createImageBitmap', vi.fn().mockReturnValue(bitmapLoad.promise))
     editImage.mockResolvedValue({ data: [{ b64_json: 'aW1hZ2U=' }] })
     const wrapper = await mountReadyView()
     const file = new File([new Uint8Array([1])], 'outpaint.png', { type: 'image/png' })
@@ -725,11 +720,11 @@ describe('OnlineCreatorView', () => {
     await wrapper.find('[data-test="creator-prompt"]').setValue('延展原图天空')
     await setInputFiles(wrapper, '#creator-image-file', [file])
     await wrapper.find('[data-test="creator-submit"]').trigger('submit')
-    expect(finishImageLoad).toBeTypeOf('function')
+    expect(createImageBitmap).toHaveBeenCalledWith(file)
 
     await wrapper.find('[data-test="creator-tool-product-copy"]').trigger('click')
     await wrapper.find('[data-test="creator-prompt"]').setValue('另一工具的新提示词')
-    finishImageLoad?.()
+    bitmapLoad.resolve({ width: 100, height: 100, close: vi.fn() })
     await flushPromises()
 
     expect(editImage.mock.calls[0][0]).toMatchObject({ model: 'gpt-image-1', creatorTool: 'outpaint' })
@@ -749,8 +744,8 @@ describe('OnlineCreatorView', () => {
     expect(wrapper.text()).toContain('已选择 6 / 6 张')
   })
 
-  it('批量任务按所选画布同步提交比例和清晰度档位', async () => {
-    submitBatchImageJob.mockResolvedValue({ id: 'batch-wide', status: 'queued', item_count: 1 })
+  it('批量任务选择非 1024 方图时按所选画布逐张处理', async () => {
+    editImage.mockResolvedValue({ data: [{ b64_json: 'YmF0Y2gtd2lkZQ==' }] })
     const wrapper = await mountReadyView('batch-main')
     const product = new File([new Uint8Array([1])], 'wide.png', { type: 'image/png' })
 
@@ -758,9 +753,14 @@ describe('OnlineCreatorView', () => {
     await setInputFiles(wrapper, '#creator-batch-files', [product])
     await vi.waitFor(() => expect(wrapper.find('[data-test="creator-submit-button"]').attributes('disabled')).toBeUndefined())
     await wrapper.find('[data-test="creator-submit"]').trigger('submit')
-    await vi.waitFor(() => expect(submitBatchImageJob).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(editImage).toHaveBeenCalledTimes(1))
 
-    expect(submitBatchImageJob.mock.calls[0][1]).toMatchObject({ aspect_ratio: '16:9', image_size: '2K' })
+    expect(submitBatchImageJob).not.toHaveBeenCalled()
+    expect(editImage.mock.calls[0][0]).toMatchObject({
+      size: '1536x864',
+      creatorTool: 'batch-main',
+    })
+    expect(wrapper.text()).toContain('已按所选画布逐张处理')
   })
 
   it('批量任务在记录满十条后提交成功会删除最早记录', async () => {
@@ -948,6 +948,23 @@ describe('OnlineCreatorView', () => {
     await flushPromises()
 
     expect(editImage.mock.calls[0][0].prompt).toContain('去除图片中的水印')
+
+    const drawImage = installCanvasImageMocks()
+    await wrapper.find('[data-test="creator-watermark-mode"]').setValue('text')
+    await wrapper.find('[data-test="creator-ratio-4-3"]').trigger('click')
+    await wrapper.find('input[placeholder="输入要添加的水印文字"]').setValue('示例水印')
+    await wrapper.find('[data-test="creator-submit"]').trigger('submit')
+    await flushPromises()
+
+    expect(drawImage).toHaveBeenCalledWith(expect.anything(), 0, 12.5, 100, 75, 0, 0, 1536, 1152)
+    expect(wrapper.text()).toContain('1536 x 1152')
+
+    await wrapper.find('[data-test="creator-watermark-mode"]').setValue('logo')
+    await setInputFiles(wrapper, '#creator-logo-file', [new File([new Uint8Array([2])], 'logo.png', { type: 'image/png' })])
+    await wrapper.find('[data-test="creator-submit"]').trigger('submit')
+    await flushPromises()
+
+    expect(drawImage).toHaveBeenLastCalledWith(expect.anything(), 1228, 844, 276, 276)
   })
 
   it('展示失败状态并保留生成记录', async () => {

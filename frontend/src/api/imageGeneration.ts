@@ -223,7 +223,7 @@ async function imageBlobFromItem(item: ImageGenerationItem, signal?: AbortSignal
 
   if (item.url.startsWith('data:')) return base64ImageBlob(item.url, imageMimeType(item.output_format))
   const response = await fetch(item.url, { signal })
-  if (!response.ok) throw new Error(`无法读取 Grok 图片结果（HTTP ${response.status}）`)
+  if (!response.ok) throw new Error(`无法读取图片结果（HTTP ${response.status}）`)
   return response.blob()
 }
 
@@ -250,7 +250,7 @@ async function decodeImageBlob(blob: Blob): Promise<DecodedImage> {
     const image = await new Promise<HTMLImageElement>((resolve, reject) => {
       const element = new Image()
       element.onload = () => resolve(element)
-      element.onerror = () => reject(new Error('无法解码 Grok 图片结果'))
+      element.onerror = () => reject(new Error('无法解码图片结果'))
       element.src = objectUrl
     })
     return {
@@ -269,7 +269,7 @@ function canvasToBlob(canvas: HTMLCanvasElement, mimeType: string): Promise<Blob
   return new Promise((resolve, reject) => {
     canvas.toBlob((blob) => {
       if (blob) resolve(blob)
-      else reject(new Error('浏览器无法按目标尺寸导出 Grok 图片'))
+      else reject(new Error('浏览器无法按目标尺寸导出图片'))
     }, mimeType)
   })
 }
@@ -278,12 +278,12 @@ function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = () => resolve(String(reader.result || '').split(',', 2)[1] || '')
-    reader.onerror = () => reject(new Error('无法读取调整尺寸后的 Grok 图片'))
+    reader.onerror = () => reject(new Error('无法读取调整尺寸后的图片'))
     reader.readAsDataURL(blob)
   })
 }
 
-async function resizeGrokImageItem(
+async function resizeImageItem(
   item: ImageGenerationItem,
   target: ImageDimensions,
   outputFormat?: string,
@@ -303,7 +303,7 @@ async function resizeGrokImageItem(
     canvas.width = target.width
     canvas.height = target.height
     const context = canvas.getContext('2d')
-    if (!context) throw new Error('浏览器无法创建 Grok 图片尺寸处理画布')
+    if (!context) throw new Error('浏览器无法创建图片尺寸处理画布')
 
     const scale = Math.max(target.width / decoded.width, target.height / decoded.height)
     const sourceWidth = target.width / scale
@@ -337,23 +337,25 @@ async function resizeGrokImageItem(
   }
 }
 
-async function normalizeGrokImageResponse(
+async function normalizeImageResponse(
   response: ImageGenerationResponse,
   request: ImageGenerateRequest
 ): Promise<ImageGenerationResponse> {
-  if (!isGrokImageModel(request.model)) return response
+  const creatorTool = request.creatorTool?.trim().toLowerCase() || ''
+  const needsExactCanvas = isGrokImageModel(request.model) || ['image', 'edit', 'outpaint', 'watermark', 'batch-main', 'batch-clone'].includes(creatorTool)
+  if (!needsExactCanvas) return response
   const target = parseImageDimensions(request.size)
   if (!target) return response
 
   const normalizedResponse = { ...response }
   if (response.data) {
     normalizedResponse.data = await Promise.all(
-      response.data.map((item) => resizeGrokImageItem(item, target, request.outputFormat, request.signal))
+      response.data.map((item) => resizeImageItem(item, target, request.outputFormat, request.signal))
     )
   }
   if (response.output) {
     normalizedResponse.output = await Promise.all(
-      response.output.map((item) => resizeGrokImageItem(item, target, request.outputFormat, request.signal))
+      response.output.map((item) => resizeImageItem(item, target, request.outputFormat, request.signal))
     )
   }
   return normalizedResponse
@@ -508,7 +510,7 @@ export async function generateImage(request: ImageGenerateRequest): Promise<Imag
     request.signal,
     request.creatorTool
   )
-  return normalizeGrokImageResponse(response, request)
+  return normalizeImageResponse(response, request)
 }
 
 export async function editImage(request: ImageEditRequest): Promise<ImageGenerationResponse> {
@@ -536,7 +538,7 @@ export async function editImage(request: ImageEditRequest): Promise<ImageGenerat
     request.signal,
     request.creatorTool
   )
-  return normalizeGrokImageResponse(response, request)
+  return normalizeImageResponse(response, request)
 }
 
 export const imageGenerationAPI = {

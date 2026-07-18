@@ -108,7 +108,7 @@
 
               <label v-if="activeTool === 'watermark'" class="field-block">
                 <span>水印模式</span>
-                <select v-model="watermarkMode" class="field-control">
+                <select v-model="watermarkMode" class="field-control" data-test="creator-watermark-mode">
                   <option value="remove">去除水印</option>
                   <option value="text">添加文字水印</option>
                   <option value="logo">添加 logo</option>
@@ -855,14 +855,14 @@ function extractErrorMessage(error: unknown, fallback: string): string {
 
 function imageOutputFromResponse(response: unknown, size: string): CreatorOutput {
   const payload = response && typeof response === 'object' ? response as {
-    data?: Array<{ b64_json?: string; url?: string }>
-    output?: Array<{ b64_json?: string; url?: string }>
+    data?: Array<{ b64_json?: string; url?: string; size?: string }>
+    output?: Array<{ b64_json?: string; url?: string; size?: string }>
   } : {}
   const item = [...(payload.data || []), ...(payload.output || [])][0]
   if (!item) throw new Error('图片接口已返回，但没有找到可展示结果')
   const url = item.b64_json ? `data:image/png;base64,${item.b64_json}` : item.url
   if (!url) throw new Error('图片结果缺少 URL 或 base64 内容')
-  return { type: 'image', url, content: '图片生成完成', size }
+  return { type: 'image', url, content: '图片生成完成', size: item.size || size }
 }
 
 async function loadModelsForSelectedKey() {
@@ -1128,11 +1128,10 @@ async function submitEdit(apiKey: string, signal: AbortSignal, task: CreatorTask
   let requestedSize = submittedSize
   let editPrompt = `请基于上传原图完成编辑，严格保持未明确要求修改的主体身份、主题、构图、风格、色彩和关键细节不变。编辑要求：${submittedPrompt}`
   if (task.toolId === 'outpaint') {
-    const expanded = await createDirectionalOutpaintFiles(sourceImage, submittedDirection, submittedRatio)
+    const expanded = await createDirectionalOutpaintFiles(sourceImage, submittedDirection, submittedRatio, submittedSize)
     if (!isTaskCurrent(task)) return
     sourceImage = expanded.image
     mask = expanded.mask
-    requestedSize = `${expanded.width}x${expanded.height}`
     const directionLabel = outpaintDirectionOptions.find((option) => option.id === submittedDirection)?.label || '四周'
     editPrompt = `扩展原图画布，严格保持原图已有区域的主体、构图、文字、色彩和细节不变，仅自然补全透明扩展区域。扩图方向：${directionLabel}；补充要求：${submittedPrompt || '延续原有场景、光影和透视'}`
   }
@@ -1165,6 +1164,10 @@ async function submitBatch(apiKey: string, task: CreatorTaskContext, signal: Abo
   if (!taskModel) throw new Error('当前密钥暂无可用图片模型')
   if (!batchAPIAvailable.value) {
     await fallbackBatchWithImageEdits(apiKey, new Error('批量接口未启用'), toolId, referenceFile, productFiles, taskPrompt, taskImageSize, taskModel, task, signal)
+    return
+  }
+  if (taskImageSize !== '1024x1024') {
+    await fallbackBatchWithImageEdits(apiKey, new Error('批量接口仅支持 1024 x 1024，已按所选画布逐张处理'), toolId, referenceFile, productFiles, taskPrompt, taskImageSize, taskModel, task, signal)
     return
   }
   const referenceImages = referenceFile
@@ -1376,8 +1379,8 @@ async function submitWatermark(apiKey: string, task: CreatorTaskContext, signal:
     return
   }
   const blob = mode === 'text'
-    ? await renderTextWatermark(sourceFile, submittedText)
-    : await renderLogoWatermark(sourceFile, submittedLogo)
+    ? await renderTextWatermark(sourceFile, submittedText, submittedSize)
+    : await renderLogoWatermark(sourceFile, submittedLogo, submittedSize)
   if (!isTaskCurrent(task)) return
   const url = createCreatorObjectURL(blob)
   task.state.output = { type: 'image', url, content: '水印图片已生成', size: submittedSize }
@@ -1692,21 +1695,17 @@ async function createDirectionalOutpaintFiles(
   file: File,
   direction: (typeof outpaintDirectionOptions)[number]['id'],
   ratio: number,
+  targetSize: string,
 ): Promise<Awaited<ReturnType<typeof createOutpaintFiles>>> {
   const safeRatio = Math.min(1, Math.max(0.25, Number(ratio) || 0.5))
-  if (direction === 'all') {
-    return createOutpaintFiles(file, { mode: 'scale', scale: 1 + safeRatio })
-  }
-
-  const image = await loadImageElement(file)
-  const sourceWidth = image.naturalWidth || image.width
-  const sourceHeight = image.naturalHeight || image.height
+  const [width, height] = targetSize.split('x').map(Number)
+  if (!width || !height) throw new Error('扩图目标画布尺寸无效')
   return createOutpaintFiles(file, {
-    mode: 'free',
-    top: direction === 'top' ? Math.round(sourceHeight * safeRatio) : 0,
-    right: direction === 'right' ? Math.round(sourceWidth * safeRatio) : 0,
-    bottom: direction === 'bottom' ? Math.round(sourceHeight * safeRatio) : 0,
-    left: direction === 'left' ? Math.round(sourceWidth * safeRatio) : 0,
+    mode: 'target',
+    width,
+    height,
+    direction,
+    expansionRatio: safeRatio,
   })
 }
 
@@ -1771,14 +1770,34 @@ function loadImageElement(file: File): Promise<HTMLImageElement> {
   })
 }
 
-async function renderTextWatermark(file: File, text: string): Promise<Blob> {
+function drawImageToCanvas(ctx: CanvasRenderingContext2D, image: HTMLImageElement, width: number, height: number): void {
+  const sourceWidth = image.naturalWidth || image.width
+  const sourceHeight = image.naturalHeight || image.height
+  const scale = Math.max(width / sourceWidth, height / sourceHeight)
+  const cropWidth = width / scale
+  const cropHeight = height / scale
+  const cropX = (sourceWidth - cropWidth) / 2
+  const cropY = (sourceHeight - cropHeight) / 2
+  ctx.drawImage(image, cropX, cropY, cropWidth, cropHeight, 0, 0, width, height)
+}
+
+function parseCanvasSize(size: string): { width: number; height: number } {
+  const match = /^(\d+)x(\d+)$/.exec(size)
+  const width = Number(match?.[1])
+  const height = Number(match?.[2])
+  if (!width || !height) throw new Error('画布尺寸无效')
+  return { width, height }
+}
+
+async function renderTextWatermark(file: File, text: string, targetSize: string): Promise<Blob> {
   const image = await loadImageElement(file)
+  const target = parseCanvasSize(targetSize)
   const canvas = document.createElement('canvas')
-  canvas.width = image.naturalWidth || image.width
-  canvas.height = image.naturalHeight || image.height
+  canvas.width = target.width
+  canvas.height = target.height
   const ctx = canvas.getContext('2d')
   if (!ctx) throw new Error('当前浏览器不支持 Canvas 水印处理')
-  ctx.drawImage(image, 0, 0, canvas.width, canvas.height)
+  drawImageToCanvas(ctx, image, canvas.width, canvas.height)
   ctx.font = `${Math.max(24, Math.round(canvas.width * 0.04))}px sans-serif`
   ctx.fillStyle = 'rgba(255,255,255,0.72)'
   ctx.strokeStyle = 'rgba(15,23,42,0.28)'
@@ -1790,15 +1809,16 @@ async function renderTextWatermark(file: File, text: string): Promise<Blob> {
   return canvasToBlob(canvas)
 }
 
-async function renderLogoWatermark(file: File, logo: File | null): Promise<Blob> {
+async function renderLogoWatermark(file: File, logo: File | null, targetSize: string): Promise<Blob> {
   if (!logo) throw new Error('请先上传 logo 图片')
   const [image, logoImage] = await Promise.all([loadImageElement(file), loadImageElement(logo)])
+  const target = parseCanvasSize(targetSize)
   const canvas = document.createElement('canvas')
-  canvas.width = image.naturalWidth || image.width
-  canvas.height = image.naturalHeight || image.height
+  canvas.width = target.width
+  canvas.height = target.height
   const ctx = canvas.getContext('2d')
   if (!ctx) throw new Error('当前浏览器不支持 Canvas 水印处理')
-  ctx.drawImage(image, 0, 0, canvas.width, canvas.height)
+  drawImageToCanvas(ctx, image, canvas.width, canvas.height)
   const width = Math.round(canvas.width * 0.18)
   const height = Math.round(width * ((logoImage.naturalHeight || logoImage.height) / (logoImage.naturalWidth || logoImage.width)))
   ctx.globalAlpha = 0.72
