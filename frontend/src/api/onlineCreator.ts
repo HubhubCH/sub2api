@@ -20,6 +20,7 @@ export interface CreatorTextCompletionRequest {
   mode: CreatorTextMode
   prompt: string
   targetLanguage?: string
+  referenceImage?: File
   signal?: AbortSignal
 }
 
@@ -149,13 +150,56 @@ export function buildCreatorTextMessages(request: Pick<CreatorTextCompletionRequ
     chat: `你是在线创作工作台里的中文创作助手。直接给出可执行结果，避免空泛解释，输出语言为${targetLanguage}。`,
     'product-copy': `你是电商商品文案助手。根据用户素材生成标题、卖点、详情页短文案和适合闲鱼/电商发布的描述，输出语言为${targetLanguage}。`,
     translate: `你是专业翻译助手。保留原意、语气和格式，只输出${targetLanguage}译文。`,
-    'prompt-optimize': `你是专业 AI 创作提示词优化助手。保留用户原始意图，补充主体、环境、构图、镜头、光影、材质、动作与约束中的必要细节；不要改变任务目标，不要解释，不要添加标题，只输出一段可直接提交的${targetLanguage}提示词。`,
+    'prompt-optimize': `你是专业 AI 创作提示词优化助手。保留用户原始意图；如果提供了参考图，必须以参考图为最高优先级，准确保持其主体身份、主题、构图、风格、色彩和关键元素，只补充与参考图一致的必要细节，禁止改换主题或凭空增加冲突元素。不要解释，不要添加标题，只输出一段可直接提交的${targetLanguage}提示词。`,
   }[request.mode]
 
   return [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: request.prompt },
   ]
+}
+
+function fileToDataURL(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.onerror = () => reject(new Error('参考图读取失败，请重新上传'))
+    reader.readAsDataURL(file)
+  })
+}
+
+async function buildCreatorRequestMessages(request: CreatorTextCompletionRequest): Promise<{
+  chat: unknown[]
+  responses: unknown[]
+}> {
+  const messages = buildCreatorTextMessages(request)
+  if (!request.referenceImage) return { chat: messages, responses: messages }
+
+  const imageURL = await fileToDataURL(request.referenceImage)
+  const systemText = messages[0]?.content || ''
+  const userText = messages[1]?.content || request.prompt
+  return {
+    chat: [
+      { role: 'system', content: systemText },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: userText },
+          { type: 'image_url', image_url: { url: imageURL } },
+        ],
+      },
+    ],
+    responses: [
+      { role: 'system', content: [{ type: 'input_text', text: systemText }] },
+      {
+        role: 'user',
+        content: [
+          { type: 'input_text', text: userText },
+          { type: 'input_image', image_url: imageURL },
+        ],
+      },
+    ],
+  }
 }
 
 export async function listTextModels(apiKey: string): Promise<string[]> {
@@ -180,17 +224,20 @@ export async function listTextModels(apiKey: string): Promise<string[]> {
 }
 
 export async function createTextCompletion(request: CreatorTextCompletionRequest): Promise<CreatorTextCompletionResult> {
-  const messages = buildCreatorTextMessages(request)
+  const plainMessages = buildCreatorTextMessages(request)
+  const messages = request.referenceImage
+    ? await buildCreatorRequestMessages(request)
+    : { chat: plainMessages, responses: plainMessages }
   const useResponses = usesResponsesEndpoint(request.model)
   const payload = useResponses
     ? {
         model: request.model,
-        input: messages,
+        input: messages.responses,
         stream: false,
       }
     : {
         model: request.model,
-        messages,
+        messages: messages.chat,
         temperature: 0.4,
         stream: false,
       }

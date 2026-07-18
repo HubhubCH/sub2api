@@ -491,6 +491,26 @@ describe('OnlineCreatorView', () => {
     expect((wrapper.find('[data-test="creator-prompt"]').element as HTMLTextAreaElement).value).toBe('我手动修改后的提示词')
   })
 
+  it('图片工具优化提示词时携带上传的参考图并限制主题偏移', async () => {
+    listTextModels.mockResolvedValue(['codex-mini-latest', 'gpt-4o-mini'])
+    createTextCompletion.mockResolvedValue({ content: '保持原图主体的优化提示词' })
+    const wrapper = await mountReadyView('outpaint')
+    const referenceImage = new File([new Uint8Array([1])], 'reference.png', { type: 'image/png' })
+
+    await setInputFiles(wrapper, '#creator-image-file', [referenceImage])
+    await wrapper.find('[data-test="creator-prompt"]').setValue('向左延展背景')
+    await wrapper.find('[data-test="creator-optimize-prompt"]').trigger('click')
+    await flushPromises()
+
+    expect(createTextCompletion.mock.calls[0][0]).toMatchObject({
+      mode: 'prompt-optimize',
+      model: 'gpt-4o-mini',
+      referenceImage,
+    })
+    expect(createTextCompletion.mock.calls[0][0].prompt).toContain('必须以随请求提供的参考图为准')
+    expect((wrapper.find('[data-test="creator-prompt"]').element as HTMLTextAreaElement).value).toBe('保持原图主体的优化提示词')
+  })
+
   it('本地文案按用户清理三天前记录、限制十条并支持手动删除', async () => {
     const now = Date.now()
     localStorage.setItem('auth_user', JSON.stringify({ id: 99 }))
@@ -677,6 +697,7 @@ describe('OnlineCreatorView', () => {
     })
     expect(editImage.mock.calls[0][0].image.name).toBe('outpaint-source.png')
     expect(editImage.mock.calls[0][0].mask.name).toBe('outpaint-mask.png')
+    expect(editImage.mock.calls[0][0].inputFidelity).toBe('high')
     expect(editImage.mock.calls[0][0].prompt).toContain('仅自然补全透明扩展区域')
     expect(editImage.mock.calls[0][0].prompt).toContain('扩图方向：向右')
   })

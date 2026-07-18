@@ -543,6 +543,7 @@ const POLL_INTERVAL_MS = 5000
 const MAX_POLL_RETRIES = 3
 const MAX_POLL_ATTEMPTS = 60
 const GATEWAY_REQUEST_TIMEOUT_MS = 180000
+const IMAGE_REQUEST_TIMEOUT_MS = 10 * 60 * 1000
 const BATCH_REQUEST_TIMEOUT_MS = 10 * 60 * 1000
 const GENERATION_RECORD_RETENTION_MS = 72 * 60 * 60 * 1000
 const BATCH_RECORD_QUERY_CONCURRENCY = 4
@@ -750,14 +751,39 @@ function buildImagePrompt(sourcePrompt: string): string {
   return [scene?.directive, sourcePrompt, styleDirective].filter(Boolean).join('\n')
 }
 
+function promptOptimizationReferenceImage(toolId: CreatorWorkToolId): File | null {
+  const form = formStates[toolId]
+  if (toolId === 'edit' || toolId === 'outpaint' || toolId === 'watermark') return form.selectedImageFile
+  if (toolId === 'batch-clone') return form.referenceImageFile
+  if (toolId === 'batch-main') return form.batchProductFiles[0] || null
+  if (toolId === 'video') return form.videoReferenceFile
+  return null
+}
+
+function promptOptimizationModel(models: string[], referenceImage: File | null): string {
+  if (!referenceImage) return models[0] || ''
+  const priorities = [
+    /^gpt-4o-mini(?:$|[-.])/i,
+    /^gpt-4\.1-mini(?:$|[-.])/i,
+    /^gpt-4o(?:$|[-.])/i,
+    /^gpt-4\.1(?:$|[-.])/i,
+    /^gpt-5(?:$|[-.])/i,
+    /^o(?:3|4)(?:$|[-.])/i,
+  ]
+  return priorities
+    .map((pattern) => models.find((model) => pattern.test(model) && !/(codex|audio|realtime)/i.test(model)))
+    .find(Boolean) || models[0] || ''
+}
+
 async function optimizeCurrentPrompt(): Promise<void> {
   if (!canOptimizePrompt.value || !isWorkTool(activeTool.value) || !effectiveTextApiKey.value) return
   const toolId = activeTool.value
   const state = promptOptimizationStates[toolId]
   const version = ++state.version
   const sourcePrompt = formStates[toolId].prompt.trim()
-  const model = effectiveTextModels.value[0]
   const apiKey = effectiveTextApiKey.value.key
+  const referenceImage = promptOptimizationReferenceImage(toolId)
+  const model = promptOptimizationModel(effectiveTextModels.value, referenceImage)
   state.loading = true
   state.error = ''
   try {
@@ -765,8 +791,13 @@ async function optimizeCurrentPrompt(): Promise<void> {
       apiKey,
       model,
       mode: 'prompt-optimize',
-      prompt: `创作工具：${creatorToolLabel(toolId)}\n原始提示词：${sourcePrompt}`,
+      prompt: [
+        `创作工具：${creatorToolLabel(toolId)}`,
+        referenceImage ? '参考图约束：必须以随请求提供的参考图为准，保持其主体、主题、构图、风格、色彩和关键元素，不得偏离。' : '',
+        `原始提示词：${sourcePrompt}`,
+      ].filter(Boolean).join('\n'),
       targetLanguage: '中文',
+      ...(referenceImage ? { referenceImage } : {}),
     })
     if (state.version !== version) return
     if (formStates[toolId].prompt.trim() !== sourcePrompt) {
@@ -1095,7 +1126,7 @@ async function submitEdit(apiKey: string, signal: AbortSignal, task: CreatorTask
   let sourceImage = sourceFile
   let mask: File | undefined
   let requestedSize = submittedSize
-  let editPrompt = submittedPrompt
+  let editPrompt = `请基于上传原图完成编辑，严格保持未明确要求修改的主体身份、主题、构图、风格、色彩和关键细节不变。编辑要求：${submittedPrompt}`
   if (task.toolId === 'outpaint') {
     const expanded = await createDirectionalOutpaintFiles(sourceImage, submittedDirection, submittedRatio)
     if (!isTaskCurrent(task)) return
@@ -1115,6 +1146,7 @@ async function submitEdit(apiKey: string, signal: AbortSignal, task: CreatorTask
     outputFormat: 'png',
     image: sourceImage,
     mask,
+    inputFidelity: 'high',
     creatorTool: task.toolId,
     signal,
   })
@@ -1467,7 +1499,11 @@ async function handleSubmit() {
   const controller = new AbortController()
   state.controller = controller
   let timedOut = false
-  const timeoutMs = toolId === 'batch-main' || toolId === 'batch-clone' ? BATCH_REQUEST_TIMEOUT_MS : GATEWAY_REQUEST_TIMEOUT_MS
+  const timeoutMs = toolId === 'batch-main' || toolId === 'batch-clone'
+    ? BATCH_REQUEST_TIMEOUT_MS
+    : toolId === 'image' || toolId === 'edit' || toolId === 'outpaint'
+      ? IMAGE_REQUEST_TIMEOUT_MS
+      : GATEWAY_REQUEST_TIMEOUT_MS
   const timeoutId = window.setTimeout(() => {
     timedOut = true
     controller.abort()

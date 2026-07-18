@@ -31,7 +31,7 @@ function stubImageCanvas(sourceWidth: number, sourceHeight: number, encodedBytes
   return { canvas, decodedImage, drawImage }
 }
 
-describe('imageGeneration API streaming transport', () => {
+describe('imageGeneration API transport', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn())
   })
@@ -41,7 +41,7 @@ describe('imageGeneration API streaming transport', () => {
     vi.restoreAllMocks()
   })
 
-  it('streams image generation and returns the completed image', async () => {
+  it('uses non-streaming image generation while remaining compatible with SSE responses', async () => {
     const fetchMock = vi.mocked(fetch)
     fetchMock.mockResolvedValue(
       streamResponse([
@@ -76,20 +76,20 @@ describe('imageGeneration API streaming transport', () => {
     expect(init?.headers).toEqual(
       expect.objectContaining({
         Authorization: `Bearer ${API_KEY}`,
-        Accept: 'text/event-stream',
+        Accept: 'application/json',
         'X-Creator-Tool': 'outpaint',
       })
     )
     expect(JSON.parse(String(init?.body))).toEqual(
       expect.objectContaining({
-        stream: true,
-        partial_images: 1,
+        stream: false,
         response_format: 'b64_json',
       })
     )
+    expect(JSON.parse(String(init?.body))).not.toHaveProperty('partial_images')
   })
 
-  it('keeps JSON responses compatible when an upstream ignores streaming', async () => {
+  it('parses normal JSON image responses', async () => {
     vi.mocked(fetch).mockResolvedValue(
       new Response(JSON.stringify({ data: [{ b64_json: 'anNvbg==' }] }), {
         status: 200,
@@ -107,6 +107,24 @@ describe('imageGeneration API streaming transport', () => {
     })
 
     expect(result.data?.[0]?.b64_json).toBe('anNvbg==')
+  })
+
+  it('surfaces a JSON error committed as HTTP 200 after a keepalive heartbeat', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(' \n{"error":{"message":"Image policy rejected the prompt","code":"policy_rejected"}}', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    )
+
+    await expect(generateImage({
+      apiKey: API_KEY,
+      model: 'gpt-image-2',
+      prompt: 'blocked prompt',
+      size: '1024x1024',
+      quality: 'medium',
+      count: 1,
+    })).rejects.toThrow('Image policy rejected the prompt')
   })
 
   it('loads only image endpoint models available to the selected API key', async () => {
@@ -132,7 +150,7 @@ describe('imageGeneration API streaming transport', () => {
     expect(result).toEqual(['gpt-image-2', 'grok-imagine-image'])
   })
 
-  it('maps gpt-image-2 dimensions to the upstream size, aspect and resolution contract', async () => {
+  it('passes exact gpt-image-2 dimensions to preserve custom and outpaint canvases', async () => {
     vi.mocked(fetch).mockResolvedValue(
       new Response(JSON.stringify({ data: [{ b64_json: 'MmstaW1hZ2U=' }] }), {
         status: 200,
@@ -153,11 +171,11 @@ describe('imageGeneration API streaming transport', () => {
     const body = JSON.parse(String(init?.body))
     expect(body).toEqual(
       expect.objectContaining({
-        size: '1536x1024',
-        aspect_ratio: '16:9',
-        resolution: '2K',
+        size: '3840x2160',
       })
     )
+    expect(body).not.toHaveProperty('aspect_ratio')
+    expect(body).not.toHaveProperty('resolution')
   })
 
   it('normalizes legacy GPT Image sizes to a model-supported orientation', async () => {
@@ -283,7 +301,7 @@ describe('imageGeneration API streaming transport', () => {
     ).rejects.toThrow('Image policy rejected the prompt')
   })
 
-  it('enables streaming for image edits without changing the page contract', async () => {
+  it('uses non-streaming high-fidelity edits and preserves the exact target size', async () => {
     vi.mocked(fetch).mockResolvedValue(
       streamResponse([
         'event: image_edit.completed\ndata: {"type":"image_edit.completed","b64_json":"ZWRpdGVk","output_format":"webp"}',
@@ -303,16 +321,18 @@ describe('imageGeneration API streaming transport', () => {
       outputFormat: 'webp',
       image,
       mask,
+      inputFidelity: 'high',
     })
 
     expect(result.data?.[0]?.b64_json).toBe('ZWRpdGVk')
     const [, init] = vi.mocked(fetch).mock.calls[0]
     const body = init?.body as FormData
-    expect(body.get('stream')).toBe('true')
-    expect(body.get('partial_images')).toBe('1')
-    expect(body.get('size')).toBe('1024x1536')
-    expect(body.get('aspect_ratio')).toBe('2:3')
-    expect(body.get('resolution')).toBe('2K')
+    expect(body.get('stream')).toBe('false')
+    expect(body.get('partial_images')).toBeNull()
+    expect(body.get('size')).toBe('2048x3072')
+    expect(body.get('aspect_ratio')).toBeNull()
+    expect(body.get('resolution')).toBeNull()
+    expect(body.get('input_fidelity')).toBe('high')
     expect(body.get('image')).toBe(image)
     expect(body.get('mask')).toBe(mask)
   })

@@ -16,6 +16,7 @@ export interface ImageGenerateRequest {
 export interface ImageEditRequest extends ImageGenerateRequest {
   image: File
   mask?: File
+  inputFidelity?: string
 }
 
 export interface ImageGenerationItem {
@@ -37,6 +38,7 @@ export interface ImageGenerationResponse {
 }
 
 const IMAGE_GATEWAY_TIMEOUT_MS = 180_000
+const IMAGE_GENERATION_TIMEOUT_MS = 10 * 60_000
 
 function bearerHeaders(apiKey: string) {
   return {
@@ -58,7 +60,8 @@ async function gatewayRequest<T>(
   path: string,
   init: RequestInit,
   handleResponse: (response: Response) => Promise<T>,
-  callerSignal?: AbortSignal
+  callerSignal?: AbortSignal,
+  timeoutMs = IMAGE_GATEWAY_TIMEOUT_MS
 ): Promise<T> {
   const controller = new AbortController()
   let timedOut = false
@@ -74,7 +77,7 @@ async function gatewayRequest<T>(
   const timeoutId = globalThis.setTimeout(() => {
     timedOut = true
     controller.abort()
-  }, IMAGE_GATEWAY_TIMEOUT_MS)
+  }, timeoutMs)
 
   try {
     const response = await fetch(buildGatewayUrl(path), {
@@ -137,8 +140,6 @@ export async function listImageModels(apiKey: string): Promise<string[]> {
 
 interface ImageSizeParameters {
   size?: string
-  aspect_ratio?: string
-  resolution?: '1K' | '2K'
 }
 
 interface ImageDimensions {
@@ -146,42 +147,12 @@ interface ImageDimensions {
   height: number
 }
 
-const COMMON_ASPECT_RATIOS = [
-  { value: '1:1', ratio: 1 },
-  { value: '16:9', ratio: 16 / 9 },
-  { value: '9:16', ratio: 9 / 16 },
-  { value: '4:3', ratio: 4 / 3 },
-  { value: '3:4', ratio: 3 / 4 },
-  { value: '3:2', ratio: 3 / 2 },
-  { value: '2:3', ratio: 2 / 3 },
-  { value: '21:9', ratio: 21 / 9 }
-] as const
-
 function parseImageDimensions(size: string): ImageDimensions | null {
   const match = /^\s*(\d+)\s*x\s*(\d+)\s*$/i.exec(size)
   const width = Number(match?.[1])
   const height = Number(match?.[2])
   if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) return null
   return { width, height }
-}
-
-function greatestCommonDivisor(a: number, b: number): number {
-  let x = Math.abs(a)
-  let y = Math.abs(b)
-  while (y) {
-    const remainder = x % y
-    x = y
-    y = remainder
-  }
-  return x || 1
-}
-
-function aspectRatioForDimensions({ width, height }: ImageDimensions): string {
-  const ratio = width / height
-  const common = COMMON_ASPECT_RATIOS.find((item) => Math.abs(item.ratio - ratio) < 0.005)
-  if (common) return common.value
-  const divisor = greatestCommonDivisor(width, height)
-  return `${Math.round(width / divisor)}:${Math.round(height / divisor)}`
 }
 
 function orientationSize(dimensions: ImageDimensions, landscape: string, portrait: string, square: string): string {
@@ -196,11 +167,7 @@ function imageSizeParameters(model: string, requestedSize: string): ImageSizePar
   const dimensions = parseImageDimensions(requestedSize) || { width: 1024, height: 1024 }
 
   if (/^gpt-image-2(?:$|[-.])/.test(normalizedModel)) {
-    return {
-      size: orientationSize(dimensions, '1536x1024', '1024x1536', '1024x1024'),
-      aspect_ratio: aspectRatioForDimensions(dimensions),
-      resolution: Math.max(dimensions.width, dimensions.height) > 1024 ? '2K' : '1K'
-    }
+    return { size: requestedSize }
   }
 
   if (/^gpt-image-(?:1(?:\.5)?|1-mini)(?:$|[-.])/.test(normalizedModel)) {
@@ -485,11 +452,16 @@ async function parseImageResponse(response: Response): Promise<ImageGenerationRe
   }
 
   if (contentType.includes('text/event-stream')) return parseImageStreamBody(body)
+  let payload: ImageStreamEventPayload
   try {
-    return JSON.parse(body) as ImageGenerationResponse
+    payload = JSON.parse(body) as ImageStreamEventPayload
   } catch {
     throw imageRequestError('Image endpoint returned an invalid response', response.status)
   }
+  if (payload.error) {
+    throw imageRequestError(payload.error.message || payload.message || 'Image generation failed', response.status, payload)
+  }
+  return payload as ImageGenerationResponse
 }
 
 async function streamImageRequest(
@@ -502,7 +474,7 @@ async function streamImageRequest(
 ): Promise<ImageGenerationResponse> {
   const headers: Record<string, string> = {
     ...bearerHeaders(apiKey),
-    Accept: 'text/event-stream',
+    Accept: 'application/json',
     'X-Save-Generation-Record': '1'
   }
   if (contentType) headers['Content-Type'] = contentType
@@ -512,7 +484,7 @@ async function streamImageRequest(
     method: 'POST',
     headers,
     body
-  }, parseImageResponse, signal)
+  }, parseImageResponse, signal, IMAGE_GENERATION_TIMEOUT_MS)
 }
 
 export async function generateImage(request: ImageGenerateRequest): Promise<ImageGenerationResponse> {
@@ -523,8 +495,7 @@ export async function generateImage(request: ImageGenerateRequest): Promise<Imag
     quality: request.quality,
     n: request.count,
     response_format: 'b64_json',
-    stream: true,
-    partial_images: 1,
+    stream: false,
     background: request.background,
     output_format: request.outputFormat
   })
@@ -550,10 +521,10 @@ export async function editImage(request: ImageEditRequest): Promise<ImageGenerat
   form.append('quality', request.quality)
   form.append('n', String(request.count))
   form.append('response_format', 'b64_json')
-  form.append('stream', 'true')
-  form.append('partial_images', '1')
+  form.append('stream', 'false')
   if (request.background) form.append('background', request.background)
   if (request.outputFormat) form.append('output_format', request.outputFormat)
+  if (request.inputFidelity) form.append('input_fidelity', request.inputFidelity)
   form.append('image', request.image)
   if (request.mask) form.append('mask', request.mask)
 

@@ -118,6 +118,32 @@ describe('onlineCreatorAPI', () => {
     expect(result.content).toBe('Responses 顶层文本')
   })
 
+  it('提示词优化会把上传的参考图随请求交给视觉文本模型', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: '保持参考图主题的优化提示词' } }] }),
+    })
+    const referenceImage = new File(['reference-image'], 'reference.png', { type: 'image/png' })
+
+    await onlineCreatorAPI.createTextCompletion({
+      apiKey: 'sk-vision',
+      model: 'gpt-4o',
+      mode: 'prompt-optimize',
+      prompt: '向左扩展画面',
+      referenceImage,
+    })
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.messages[0].content).toContain('参考图为最高优先级')
+    expect(body.messages[1].content).toEqual([
+      { type: 'text', text: '向左扩展画面' },
+      {
+        type: 'image_url',
+        image_url: { url: expect.stringMatching(/^data:image\/png;base64,/) },
+      },
+    ])
+  })
+
   it.each([
     'gpt-5-codex',
     'codex-mini-latest',
