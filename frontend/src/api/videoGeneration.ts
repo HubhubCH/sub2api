@@ -222,9 +222,16 @@ export function videoGenerationModeForReference(referenceImage?: string): VideoG
 
 function inferGrokCompatibleResolution(
   request: VideoGenerateRequest,
-  dimensions: VideoDimensions | null
+  dimensions: VideoDimensions | null,
+  hasInputImage: boolean
 ): VideoResolution {
-  return request.quality ?? request.resolution ?? (dimensions ? videoQualityForDimensions(dimensions) : '480p')
+  const requested = request.quality ?? request.resolution ?? (dimensions ? videoQualityForDimensions(dimensions) : '480p')
+  // xAI 仅允许 grok-imagine-video-1.5 的图生视频使用 1080p。
+  // 文生视频或其他 Grok 视频模型发送 1080p 会被上游以 400 拒绝。
+  if (requested === '1080p' && (request.model !== 'grok-imagine-video-1.5' || !hasInputImage)) {
+    return '720p'
+  }
+  return requested
 }
 
 export function normalizeAgnesFrameCount(durationSeconds?: number): number {
@@ -255,7 +262,7 @@ function buildGrokCompatiblePayload(request: VideoGenerateRequest): Record<strin
     prompt: request.prompt.trim(),
     duration: request.duration,
     aspect_ratio: aspectRatio,
-    resolution: inferGrokCompatibleResolution(request, dimensions),
+    resolution: inferGrokCompatibleResolution(request, dimensions, images.length > 0),
     image: images[0] ? { url: images[0] } : undefined,
     reference_images: images.length > 1 ? images.slice(1).map((url) => ({ url })) : undefined
   })

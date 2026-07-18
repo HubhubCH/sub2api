@@ -154,7 +154,7 @@ describe('videoGeneration gateway contract', () => {
     expect(payload).toMatchObject({ width: 1000, height: 600 })
   })
 
-  it('maps a Grok custom size and quality without sending unsupported dimension fields', async () => {
+  it('downgrades unsupported Grok 1080p combinations without sending dimension fields', async () => {
     gatewayPost.mockResolvedValue({
       data: { request_id: 'relay-request-2', provider: 'grok', status: 'queued' }
     })
@@ -175,13 +175,54 @@ describe('videoGeneration gateway contract', () => {
       model: 'grok-imagine-video',
       prompt: 'vertical city walk',
       aspect_ratio: '9:16',
-      resolution: '1080p',
+      resolution: '720p',
       image: { url: 'https://example.com/reference.png' }
     })
     expect(payload).not.toHaveProperty('size')
     expect(payload).not.toHaveProperty('width')
     expect(payload).not.toHaveProperty('height')
     expect(payload).not.toHaveProperty('quality')
+  })
+
+  it('keeps 1080p for grok-imagine-video-1.5 image-to-video requests', async () => {
+    gatewayPost.mockResolvedValue({ data: { request_id: 'relay-request-1080' } })
+
+    await generateVideo({
+      apiKey: API_KEY,
+      provider: 'grok',
+      model: 'grok-imagine-video-1.5',
+      prompt: 'animate the uploaded portrait',
+      size: '1280x720',
+      quality: '1080p',
+      referenceImage: 'data:image/png;base64,AAAA'
+    })
+
+    const [, payload] = gatewayPost.mock.calls[0]
+    expect(payload).toMatchObject({
+      model: 'grok-imagine-video-1.5',
+      prompt: 'animate the uploaded portrait',
+      resolution: '1080p',
+      image: { url: 'data:image/png;base64,AAAA' }
+    })
+  })
+
+  it('downgrades grok-imagine-video-1.5 text-to-video from 1080p to 720p', async () => {
+    gatewayPost.mockResolvedValue({ data: { request_id: 'relay-request-text-1080' } })
+
+    await generateVideo({
+      apiKey: API_KEY,
+      provider: 'grok',
+      model: 'grok-imagine-video-1.5',
+      prompt: 'a completely new cinematic scene',
+      quality: '1080p'
+    })
+
+    const [, payload] = gatewayPost.mock.calls[0]
+    expect(payload).toMatchObject({
+      prompt: 'a completely new cinematic scene',
+      resolution: '720p'
+    })
+    expect(payload).not.toHaveProperty('image')
   })
 
   it('omits image fields for text-to-video requests', async () => {

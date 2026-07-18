@@ -1063,6 +1063,22 @@ describe('OnlineCreatorView', () => {
     wrapper.unmount()
   })
 
+  it('仅在 1.5 图生视频模式启用 1080p', async () => {
+    listVideoModels.mockResolvedValue(['grok-imagine-video-1.5'])
+    const wrapper = await mountReadyView()
+
+    await wrapper.find('[data-test="creator-tool-video"]').trigger('click')
+    const quality = wrapper.find('[data-test="creator-video-quality"]')
+    const hdOption = quality.find('option[value="1080p"]')
+    expect(hdOption.attributes('disabled')).toBeDefined()
+
+    const reference = new File([new Uint8Array([1, 2, 3])], 'portrait.png', { type: 'image/png' })
+    await setInputFiles(wrapper, '#creator-video-reference-file', [reference])
+    await flushPromises()
+
+    expect(quality.find('option[value="1080p"]').attributes('disabled')).toBeUndefined()
+  })
+
   it('视频 done 视为成功终态且不再继续轮询', async () => {
     vi.useFakeTimers()
     listVideoModels.mockResolvedValue(['agnes-video-v2.0'])

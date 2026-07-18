@@ -557,12 +557,25 @@ func normalizeGrokMediaForwardBody(endpoint GrokMediaEndpoint, body []byte, cont
 	}
 	info := ParseGrokMediaRequest(contentType, body)
 	upstreamModel := normalizeGrokMediaModelForEndpoint(endpoint, info.Model, info.HasInputImage())
-	if upstreamModel == "" || upstreamModel == info.Model {
-		return body, contentType, nil
+	out := body
+	if upstreamModel != "" && upstreamModel != info.Model {
+		var err error
+		out, err = sjson.SetBytes(out, "model", upstreamModel)
+		if err != nil {
+			return nil, "", fmt.Errorf("rewrite grok media model: %w", err)
+		}
 	}
-	out, err := sjson.SetBytes(body, "model", upstreamModel)
-	if err != nil {
-		return nil, "", fmt.Errorf("rewrite grok media model: %w", err)
+
+	// 1080p 仅支持 1.5 模型的图生视频。对外部客户端也做服务端兜底，
+	// 避免不兼容组合直接触发 xAI 400。
+	resolution := strings.ToLower(strings.TrimSpace(gjson.GetBytes(out, "resolution").String()))
+	if endpoint == GrokMediaEndpointVideosGenerations && resolution == "1080p" &&
+		(upstreamModel != "grok-imagine-video-1.5" || !info.HasInputImage()) {
+		var err error
+		out, err = sjson.SetBytes(out, "resolution", "720p")
+		if err != nil {
+			return nil, "", fmt.Errorf("rewrite grok media resolution: %w", err)
+		}
 	}
 	return out, contentType, nil
 }
@@ -619,18 +632,23 @@ func sanitizeGrokMediaForwardBody(endpoint GrokMediaEndpoint, body []byte, conte
 	if !endpoint.RequiresRequestBody() || !gjson.ValidBytes(body) {
 		return body, contentType, nil
 	}
+	// provider 仅用于本站路由，任何直调 ForwardGrokMedia 的路径也不能把它发给上游。
+	out, err := sjson.DeleteBytes(body, "provider")
+	if err != nil {
+		return nil, "", fmt.Errorf("sanitize grok media provider: %w", err)
+	}
 	switch endpoint {
 	case GrokMediaEndpointImagesGenerations, GrokMediaEndpointImagesEdits:
-		if !gjson.GetBytes(body, "size").Exists() {
-			return body, contentType, nil
+		if !gjson.GetBytes(out, "size").Exists() {
+			return out, contentType, nil
 		}
-		out, err := sjson.DeleteBytes(body, "size")
+		out, err = sjson.DeleteBytes(out, "size")
 		if err != nil {
 			return nil, "", fmt.Errorf("sanitize grok media size: %w", err)
 		}
 		return out, contentType, nil
 	default:
-		return body, contentType, nil
+		return out, contentType, nil
 	}
 }
 
@@ -722,7 +740,7 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(
 	} else {
 		s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
 	}
-	upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(body)))
+	upstreamMsg := sanitizeUpstreamErrorMessage(extractGrokMediaUpstreamErrorMessage(body))
 	if upstreamMsg == "" {
 		upstreamMsg = fmt.Sprintf("xAI upstream returned status %d", resp.StatusCode)
 	}
@@ -793,6 +811,32 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(
 	MarkResponseCommitted(c)
 	writeGrokMediaErrorResponse(c, resp.StatusCode, grokMediaErrorType(resp.StatusCode), upstreamMsg)
 	return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, upstreamMsg)
+}
+
+func extractGrokMediaUpstreamErrorMessage(body []byte) string {
+	detail := gjson.GetBytes(body, "detail")
+	if detail.IsArray() {
+		messages := make([]string, 0, len(detail.Array()))
+		for _, item := range detail.Array() {
+			message := strings.TrimSpace(firstNonEmpty(item.Get("msg").String(), item.Get("message").String(), item.String()))
+			if message != "" {
+				messages = append(messages, message)
+			}
+		}
+		if len(messages) > 0 {
+			return strings.Join(messages, "; ")
+		}
+	}
+	if message := strings.TrimSpace(extractUpstreamErrorMessage(body)); message != "" {
+		return message
+	}
+	for _, path := range []string{"error", "error.detail", "data.error", "data.message"} {
+		value := gjson.GetBytes(body, path)
+		if value.Type == gjson.String && strings.TrimSpace(value.String()) != "" {
+			return strings.TrimSpace(value.String())
+		}
+	}
+	return ""
 }
 
 func grokMediaErrorType(statusCode int) string {

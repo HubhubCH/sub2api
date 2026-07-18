@@ -465,6 +465,49 @@ func TestNormalizeGrokMediaForwardBodyPreservesImageToVideoModelForOfficialURL(t
 	require.Equal(t, "https://example.com/source.png", gjson.GetBytes(out, "image.url").String())
 }
 
+func TestNormalizeGrokMediaForwardBodyDowngradesUnsupportedTextToVideo1080p(t *testing.T) {
+	body := []byte(`{
+		"model":"grok-imagine-video-1.5",
+		"prompt":"a unique mountain sunrise",
+		"resolution":"1080p"
+	}`)
+
+	out, _, err := normalizeGrokMediaForwardBody(GrokMediaEndpointVideosGenerations, body, "application/json")
+
+	require.NoError(t, err)
+	require.Equal(t, "grok-imagine-video", gjson.GetBytes(out, "model").String())
+	require.Equal(t, "720p", gjson.GetBytes(out, "resolution").String())
+	require.Equal(t, "a unique mountain sunrise", gjson.GetBytes(out, "prompt").String())
+}
+
+func TestNormalizeGrokMediaForwardBodyKeepsImageToVideo1080p(t *testing.T) {
+	body := []byte(`{
+		"model":"grok-imagine-video-1.5",
+		"prompt":"animate this exact portrait",
+		"resolution":"1080p",
+		"image":{"url":"data:image/png;base64,AAAA"}
+	}`)
+
+	out, _, err := normalizeGrokMediaForwardBody(GrokMediaEndpointVideosGenerations, body, "application/json")
+
+	require.NoError(t, err)
+	require.Equal(t, "grok-imagine-video-1.5", gjson.GetBytes(out, "model").String())
+	require.Equal(t, "1080p", gjson.GetBytes(out, "resolution").String())
+	require.Equal(t, "animate this exact portrait", gjson.GetBytes(out, "prompt").String())
+	require.Equal(t, "data:image/png;base64,AAAA", gjson.GetBytes(out, "image.url").String())
+}
+
+func TestExtractGrokMediaUpstreamErrorMessageSupportsValidationAndStringErrors(t *testing.T) {
+	require.Equal(t,
+		"1080p requires grok-imagine-video-1.5 image-to-video",
+		extractGrokMediaUpstreamErrorMessage([]byte(`{"detail":[{"msg":"1080p requires grok-imagine-video-1.5 image-to-video"}]}`)),
+	)
+	require.Equal(t,
+		"invalid image data URL",
+		extractGrokMediaUpstreamErrorMessage([]byte(`{"error":"invalid image data URL"}`)),
+	)
+}
+
 func TestCanonicalizeGrokMediaImageURLFieldsPreservesOfficialURL(t *testing.T) {
 	body := []byte(`{
 		"image":{"url":"https://example.com/official.png","image_url":"https://example.com/legacy.png"},

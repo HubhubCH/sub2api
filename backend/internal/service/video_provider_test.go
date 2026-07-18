@@ -108,7 +108,7 @@ func TestForwardGrokCompatibleVideoWithOpenAICompatibleAccount(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	body := []byte(`{"provider":"grok","model":"grok-imagine-video","prompt":"waves","duration":5,"resolution":"720p"}`)
+	body := []byte(`{"provider":"grok","model":"grok-imagine-video-1.5","prompt":"animate this exact reference","image":{"url":"data:image/png;base64,AAAA"},"duration":5,"resolution":"1080p"}`)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos/generations", bytes.NewReader(body))
 
 	account := &Account{
@@ -133,6 +133,10 @@ func TestForwardGrokCompatibleVideoWithOpenAICompatibleAccount(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "https://relay.example/v1/videos/generations", upstream.lastReq.URL.String())
 	require.Equal(t, "Bearer grok-compatible-key", upstream.lastReq.Header.Get("Authorization"))
+	require.False(t, gjson.GetBytes(upstream.lastBody, "provider").Exists())
+	require.Equal(t, "animate this exact reference", gjson.GetBytes(upstream.lastBody, "prompt").String())
+	require.Equal(t, "data:image/png;base64,AAAA", gjson.GetBytes(upstream.lastBody, "image.url").String())
+	require.Equal(t, "1080p", gjson.GetBytes(upstream.lastBody, "resolution").String())
 	require.Equal(t, "request-123", result.ResponseID)
 	require.Equal(t, "request-123", gjson.Get(recorder.Body.String(), "request_id").String())
 	require.Equal(t, "grok", gjson.Get(recorder.Body.String(), "provider").String())

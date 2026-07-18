@@ -92,8 +92,9 @@
                 <span>画质</span>
                 <select v-model="videoQuality" class="field-control" data-test="creator-video-quality">
                   <option value="720p">标准（720p）</option>
-                  <option value="1080p">高清（1080p）</option>
+                  <option value="1080p" :disabled="!videoSupports1080p">高清（1080p，仅 1.5 图生视频）</option>
                 </select>
+                <small v-if="!videoSupports1080p" class="field-hint">1080p 需要选择 grok-imagine-video-1.5 并上传参考图</small>
               </label>
 
               <label v-if="activeTool === 'product-copy'" class="field-block">
@@ -581,6 +582,10 @@ const modelOptions = computed(() => {
   if (activeTool.value === 'batch-main' || activeTool.value === 'batch-clone') return batchModels.value
   return []
 })
+const videoSupports1080p = computed(() => (
+  selectedModel.value === AGNES_VIDEO_MODEL ||
+  (selectedModel.value === 'grok-imagine-video-1.5' && Boolean(videoReferenceFile.value))
+))
 const activePromptOptimization = computed(() => isWorkTool(activeTool.value) ? promptOptimizationStates[activeTool.value] : null)
 const canOptimizePrompt = computed(() => Boolean(
   isWorkTool(activeTool.value) &&
@@ -1853,6 +1858,9 @@ watch(selectedModel, (model) => {
   if (!isGrokImageModelName(model)) return
   imageQuality.value = 'high'
   imageBackground.value = 'auto'
+})
+watch(videoSupports1080p, (supported) => {
+  if (!supported && videoQuality.value === '1080p') videoQuality.value = '720p'
 })
 
 onMounted(async () => {
